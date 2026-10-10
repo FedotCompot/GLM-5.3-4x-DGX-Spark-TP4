@@ -44,9 +44,11 @@ def kv_format(env):
         if env.get('GLM_MLA_SPLIT_K') != '32' or env.get('GLM_MLA_SPLIT_MAX_ROWS', '36') != '36':
             raise ValueError('FP4x release requires split32 and the 36-row dispatch cap')
         for key in ('GLM_FP4_PROBE_SIM', 'GLM_FP4_PROBE_CAPTURE', 'GLM_DSA_SWA_POOL',
-                    'GLM_GLUE_DSA_IDX_CACHE', 'GLM_SPEC_SAMPLE', 'GLM_TRITON_MLA_PREFILL'):
+                    'GLM_SPEC_SAMPLE', 'GLM_TRITON_MLA_PREFILL'):
             if env.get(key, '0') not in ('', '0'):
                 raise ValueError('FP4x does not compose with ' + key)
+        from glm_glue_lite import fp4x_idx_allowed
+        fp4x_idx_allowed(env)
     return mode
 
 

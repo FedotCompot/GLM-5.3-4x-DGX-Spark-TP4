@@ -27,8 +27,8 @@ EXCLUSIONS = {
     'RECIPE_LIVE_FLOOR_GIB': 'Host launcher floor, never a container env key.',
     'GATE_CTN': 'Host gate container identity, not a feature (absent in this pinned config).',
     'GLM_DECODE_FAIR_CONTROL': 'Optional runtime sidecar; public boot policy is the same 4096/40.',
-    'GLM_SKIP_MLA_PLAN': 'Gate A/B harness starts off with AB_INIT=0; public skip defaults off.',
-    'GLM_SKIP_MLA_PLAN_AB_INIT': 'Initial state of that optional A/B harness; public skip is off.',
+    'GLM_SKIP_MLA_PLAN': 'The gate A/B started off; next40 promotes the measured static-on state.',
+    'GLM_SKIP_MLA_PLAN_AB_INIT': 'The public static-on skip needs no A/B initial state.',
     'GLM_PREFILL_SOLO_CAPACITY': 'Gate launcher validation-only key; public constructor capacity is 4096.',
     'GLM_PREFILL_SOLO_CHUNK': 'Gate launcher validation-only key; 0 retains ordinary adaptive prefill.',
     'GLM_KSTOP_ASYNC_PAYLOAD': 'Gate value 0 disables async v2, which is not shipped publicly.',
@@ -36,6 +36,11 @@ EXCLUSIONS = {
     'GLM_MTP_TAU_INIT': 'Trial harness boot override; public control.json already selects 0.74.',
     'GLM_MTP_K4_CAPTURE': 'Trial graph reservation is 0; public speculative width remains K3.',
     'GLM_MTP_K4_GATE': 'Runtime K4 trial is 0; public runtime has no K4 implementation.',
+}
+
+NEXT40_OVERRIDES = {
+    'GLM_GLUE_DSA_IDX_CACHE': '1',
+    'GLM_GLUE_IDX_EXPECT': '57',
 }
 
 
@@ -104,9 +109,11 @@ with patch.dict(mod['main'].__globals__, dispram_guard_present=lambda: True):
         self.assertEqual(len(set(names)), 8)
         for args, env in self.vectors:
             for key, value in self.gate.items():
-                if key not in EXCLUSIONS:
+                if key not in EXCLUSIONS and key not in NEXT40_OVERRIDES:
                     with self.subTest(container=args[args.index('--name') + 1], key=key):
                         self.assertEqual(env.get(key), value)
+            for key, value in NEXT40_OVERRIDES.items():
+                self.assertEqual(env.get(key), value)
             self.assertEqual(env['GLM_GLUE_ROUTER_EXPECT'], 'target:75,mtp:1')
 
     def test_effective_decode_fair_boot_matches_gate_sidecar(self):
@@ -165,7 +172,12 @@ with patch.dict(mod['main'].__globals__, dispram_guard_present=lambda: True):
             self.assertEqual(env['GLM_DECODE_FAIR_DECODE_STEPS'], '40')
             self.assertEqual(env['GLM_MTP_KSTOP'], '1')
             self.assertEqual(env['GLM_MTP_KSTOP_UNIFORM_BATCH'], 'k2')
-            for key in expected.keys() - {'GLM_DECODE_FAIR_CONTROL'}:
+            self.assertEqual(env['GLM_SKIP_MLA_PLAN'], '1')
+            self.assertEqual(env['GLM_SKIP_MLA_PLAN_KSTOP'], '1')
+            self.assertEqual(env['GLM_SCREEN_FAILSAFE'], '1')
+            self.assertEqual(env['GLM_GREEDY_SAMPLE_FUSE'], '1')
+            self.assertEqual(env['GLM_KSTOP_GUARD_FUSE'], '1')
+            for key in expected.keys() - {'GLM_DECODE_FAIR_CONTROL', 'GLM_SKIP_MLA_PLAN'}:
                 self.assertNotIn(key, env)
             if '--rm' not in args:
                 self.assertEqual(args[args.index('--max-num-batched-tokens') + 1], '4096')

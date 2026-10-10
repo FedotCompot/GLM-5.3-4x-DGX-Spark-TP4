@@ -57,6 +57,8 @@ CONTROL_MODES=('local','broadcast')
 MODES=('k2','k3-stop','k3')
 BROADCAST_TEST_FLAG='GLM_MTP_KSTOP_BROADCAST_OFFLINE_TEST'
 UNIFORM_FLAG='GLM_MTP_KSTOP_UNIFORM_BATCH'
+GREEDY_FUSE_FLAG='GLM_GREEDY_SAMPLE_FUSE'
+GUARD_FUSE_FLAG='GLM_KSTOP_GUARD_FUSE'
 GUARD_SLOTS=4   # install_mtp refuses max_num_seqs>4
 GUARD_WORDS=2   # 2 x 62-bit words of the host-state SHA-256 (124 bits)
 GUARD_LEN=2*(GUARD_WORDS+GUARD_SLOTS)+1
@@ -87,6 +89,22 @@ def pad_hygiene(env=None):
     env=os.environ if env is None else env
     value=env.get('GLM_PAD_HYGIENE','0')
     if value not in ('0','1'):raise ValueError('GLM_PAD_HYGIENE must be 0 or 1')
+    return value=='1'
+
+
+def greedy_sample_fuse(env=None):
+    """Share the greedy maximum with its token id without changing FP32 confidence math."""
+    env=os.environ if env is None else env
+    value=env.get(GREEDY_FUSE_FLAG,'0') or '0'
+    if value not in ('0','1'):raise ValueError(GREEDY_FUSE_FLAG+' must be 0 or 1')
+    return value=='1'
+
+
+def guard_fuse(env=None):
+    """Use fused CUDA packet/verdict kernels for the local synchronous guard."""
+    env=os.environ if env is None else env
+    value=env.get(GUARD_FUSE_FLAG,'0') or '0'
+    if value not in ('0','1'):raise ValueError(GUARD_FUSE_FLAG+' must be 0 or 1')
     return value=='1'
 
 
@@ -137,7 +155,19 @@ class Runtime:
         self.pad_hygiene=pad_hygiene()
         self.uniform_now=False;self.uniform_cycles=0
         self.sample_mode=getattr(getattr(owner,'speculative_config',None),'draft_sample_method','greedy')
+        self.greedy_sample_fuse=greedy_sample_fuse()
+        if self.greedy_sample_fuse and self.sample_mode!='greedy':
+            raise ValueError(GREEDY_FUSE_FLAG+'=1 requires greedy draft sampling')
         self.shortcut=os.environ.get('GLM_INDEXER_SHORTCUT','0')=='1'
+        self.guard_fuse=(guard_fuse() and self.control=='local' and _is_cuda(owner.device))
+        self._guard_host=self._guard_words=self._guard_packet=self._guard_ok=None
+        if self.guard_fuse:
+            import kstop_guard_fuse
+            kstop_guard_fuse.require_available()
+            self._guard_host=torch.empty(3,dtype=torch.int64,pin_memory=True)
+            self._guard_words=torch.empty(3,dtype=torch.int64,device=owner.device)
+            self._guard_packet=torch.empty(GUARD_LEN,dtype=torch.int64,device=owner.device)
+            self._guard_ok=torch.empty(1,dtype=torch.bool,device=owner.device)
 
     def forget(self, ids):
         for rid in ids:self.proposals.pop(rid,None);self.used.discard(rid)
@@ -193,20 +223,32 @@ class Runtime:
         if not 0<=n<=GUARD_SLOTS:self.fold('guard-slots',[n],False);n=0
         group=tp_group();cuda=_is_cuda(self.owner.device);device=torch.device(self.owner.device)
         words=[int.from_bytes(self.trail[i:i+8],'little')&((1<<62)-1) for i in range(0,8*GUARD_WORDS,8)]
-        host=torch.tensor([*words,1 if self.bad else 0],dtype=torch.int64,pin_memory=cuda)
+        if cuda and self.guard_fuse:
+            self._guard_host[0]=words[0];self._guard_host[1]=words[1]
+            self._guard_host[2]=1 if self.bad else 0
+            self._guard_words.copy_(self._guard_host,non_blocking=True)
+            import kstop_guard_fuse
+            payload=kstop_guard_fuse.launch_packet(
+                self._guard_words,self.confidence,n,self._guard_packet)
+            self.guard_confidence=payload[2:2+GUARD_SLOTS]
+        else:
+            host=torch.tensor([*words,1 if self.bad else 0],dtype=torch.int64,pin_memory=cuda)
+            if cuda:host=host.to(device,non_blocking=True)
+            conf=torch.zeros(GUARD_SLOTS,dtype=torch.int64,device=device)
+            if n:conf[:n]=self.confidence[:n].view(torch.int32).to(torch.int64)
+            self.guard_confidence=conf
+            payload=torch.cat((host[:GUARD_WORDS],conf,host[GUARD_WORDS:],-host[:GUARD_WORDS],-conf))
         if cuda:
             comm=getattr(getattr(group,'device_communicator',None),'pynccl_comm',None)
             if comm is None or comm.disabled:raise RuntimeError('local kstop guard requires the PyNccl TP communicator')
-            host=host.to(device,non_blocking=True)
-        conf=torch.zeros(GUARD_SLOTS,dtype=torch.int64,device=device)
-        if n:conf[:n]=self.confidence[:n].view(torch.int32).to(torch.int64)
-        self.guard_confidence=conf
-        payload=torch.cat((host[:GUARD_WORDS],conf,host[GUARD_WORDS:],-host[:GUARD_WORDS],-conf))
         if cuda:out=comm.all_reduce(payload,op=torch.distributed.ReduceOp.MAX)
         else:
             torch.distributed.all_reduce(payload,op=torch.distributed.ReduceOp.MAX,group=group.cpu_group);out=payload
-        k=GUARD_WORDS+GUARD_SLOTS
-        ok=(out[:k]==-out[k+1:]).all()&(out[k]==0)
+        if cuda and self.guard_fuse:
+            kstop_guard_fuse.launch_verdict(out,self._guard_ok);ok=self._guard_ok[0]
+        else:
+            k=GUARD_WORDS+GUARD_SLOTS
+            ok=(out[:k]==-out[k+1:]).all()&(out[k]==0)
         self.guard_pending=(stage,ok);self.guards+=1
 
     def check_guard(self, value=None):
@@ -275,7 +317,8 @@ class Runtime:
             (['reuse-m6'] if self.uniform and self.uniform_k==2 and self.capture_layout=='reuse' else [])+
             (['probabilistic',bool(getattr(self.owner,'use_fp64_gumbel',False))] if self.sample_mode=='probabilistic' else [])+
             (['short-dsa'] if self.shortcut else [])+
-            (['pad-hygiene'] if self.pad_hygiene else []),valid)
+            (['pad-hygiene'] if self.pad_hygiene else [])+
+            (['guard-fuse'] if self.guard_fuse else []),valid)
         self.mode,self.epoch,self.tau=c['mode'],c['epoch'],float(c['tau'])
 
     def set_control(self, mode, epoch, tau):
@@ -420,6 +463,7 @@ class Runtime:
             fallback_syncs=self.fallback_syncs,guard_pending=self.guard_pending is not None)
         if self.uniform:out.update(uniform_batch=True,uniform_cycles=self.uniform_cycles)
         if self.uniform and self.uniform_k==2:out['uniform_k']=2
+        if self.guard_fuse:out['guard_fuse']=True
         return out
 
 
@@ -492,6 +536,8 @@ def initialize(runner):
     if STATE is not None:raise RuntimeError('one runner per worker required')
     moes=model_binding(runner)
     r=runner.speculator._kstop
+    import glm_screen_failsafe as fs
+    fs.finish()
     if r.pad_hygiene:
         from vllm.model_executor.models.deepseek_v2 import DeepseekV2MoE
         draft_moes=[m for m in runner.speculator.model.modules() if isinstance(m,DeepseekV2MoE)]
@@ -777,6 +823,10 @@ def install_mtp(cls):
     def unfused(self):configure(self);self.use_fused_multi_step_decode=False
     def sample(self,hidden_states,positions,idx_mapping,temperature,seeds,draft_step,draft_logits):
         logits=self.model.compute_logits(hidden_states);z=logits.float()
+        if getattr(self._kstop,'greedy_sample_fuse',False) and draft_logits is None:
+            maximum,tokens=torch.max(z,dim=-1)
+            torch.exp(maximum-z.logsumexp(-1),out=self._kstop.confidence[:len(z)])
+            return tokens
         self._kstop.confidence[:len(z)].copy_((z.amax(-1)-z.logsumexp(-1)).exp())
         if draft_logits is not None:
             # Stock sampler/cache column and temperature-zero argmax behavior.

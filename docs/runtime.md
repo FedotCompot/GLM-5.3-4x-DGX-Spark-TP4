@@ -15,8 +15,8 @@ pool and draft low-memory loader on, unmodified Red Hat drafter K3, synchronous 
 The alternative mounts and verifies `DRAFT_DIR`; native MTP needs only the target checkpoint.
 Stop the current deployment before changing profiles and use a fresh runtime path.
 
-The current full-model release also enables deterministic MoE alignment, the NVFP4 draft LM head
-and FP8 draft eh_proj with all-rank INIT qualification. Row selection and F3 index caching are off.
+The current full-model profile also enables deterministic MoE alignment, the NVFP4 draft LM head,
+FP8 draft eh_proj and F3 index caching with all-rank cold qualification. Row selection is off.
 See [the frozen selectors](release-1010-gate.md), [eh_proj](eh_proj.md) and [glue-lite](glue-lite.md).
 
 The host runtime is mounted at `/overlay`; it contains these modules in the same container namespaces
@@ -30,13 +30,13 @@ used by the measured launch:
 | 4 | `bringup/glm_full_mla.py`, memory and prefill hooks | split32 MLA; capture floor; adaptive chunks |
 | 5 | `bringup/glm_dirty_l2.py` | discard consumed split32 partials |
 | 6 | `kstop/glm_mtp_kstop.py` | K3 at c1, K2 multi-request; composes with the short-context shortcut |
-| 7 | `bringup/glm_skip_mla_plan.py` | optional, default off |
+| 7 | `bringup/glm_skip_mla_plan.py` | static generic and K-stop payload-only skips on |
 | 8 | `bringup/glm_dispram_kv.py` | FP4x carveout storage when selected by the launcher |
 | 9 | `bringup/glm_draft_head.py` | NVFP4 draft head; all-rank INIT qualification |
 | 10 | `bringup/glm_draft_ehproj.py` | FP8 draft projection; outer combined load/capture qualification |
 | 11 | `bringup/glm_mtp_rowselect.py` | optional, default off; no import in the release vector |
 | 12 | `bringup/glm_moe_det.py` | ascending per-expert target/MTP token order |
-| 13 | `bringup/glm_glue_lite.py` | F1+F2 on, F3 off; registered after the other bringup hooks |
+| 13 | `bringup/glm_glue_lite.py` | F1+F2+F3 on; rank-consistent cold fallback |
 
 `bringup/glm_spec_sample.py` (optional, off) registers right after the fast loader when `GLM_SPEC_SAMPLE=1`; it
 needs `GLM_MTP_KSTOP=0` (the launcher refuses the pair, and K-stop's MTP install refuses any draft sampler other
@@ -115,11 +115,11 @@ It logs `glm-dirty-l2: armed (discard, split 32)` and the first dispatch. It ref
 `0` or `discard`, and any split count other than 32. `GLM_DIRTY_L2=0` returns to the released reduce; the
 DSpark profile sets it to 0. The three kernel source hashes are in `docs/results/dirty-l2-profile.json`.
 
-## Glue-lite (F1+F2 on, F3 off)
+## Glue-lite (F1+F2+F3 on)
 
-The current profile enables router BF16 and Marlin MoE workspace reuse. Their measured panel was
-token-identical: +0.43 % prose and +1.0 % code. The sparse index cache stays off and the FP4x launcher
-continues to refuse it. [Details and credits](glue-lite.md). The combined release gate remains pending.
+The current profile enables router BF16, Marlin MoE workspace reuse and the target's sparse index cache.
+The three levers are source-pinned; a cold all-rank vote rolls a refused lever back before capture.
+[Details and credits](glue-lite.md).
 
 ## Native MTP K-stop (on by default)
 
@@ -194,18 +194,21 @@ prefix caching reuses full 64-token KV blocks of an identical prompt prefix from
 no extra memory reservation. The DSpark K3 profile keeps prefix caching off. Requests that must be cold (the
 release gate's prefill and teacher probes) carry a nonce or a fresh `cache_salt`.
 
-## Optional switches (off by default)
+## Static decode launch reductions
 
 MLA plan skip (`overlay/bringup/glm_skip_mla_plan.py`). Under the Triton MLA forward nothing runs the FlashInfer
 SM90 plan, yet the stock builder plans on every build and reads exact positions with blocking `.cpu()` copies.
-`GLM_SKIP_MLA_PLAN=1` returns the parent metadata without the plan. `GLM_SKIP_MLA_PLAN=ab` arms the same switch
+The profile sets `GLM_SKIP_MLA_PLAN=1`; `GLM_SKIP_MLA_PLAN_KSTOP=1` retains the synchronous K-stop host copy but
+omits its otherwise unused plan. `GLM_SKIP_MLA_PLAN=ab` arms the broad switch
 off (or `GLM_SKIP_MLA_PLAN_AB_INIT=1` on) and adds two worker RPCs (`skip_mla_plan_set`, `skip_mla_plan_status`)
 for in-boot A/B over `/collective_rpc`; it needs `VLLM_SERVER_DEV_MODE=1` on the private loopback API and is a
-window mode, never a serving mode. These three keys are not in the profile: the launcher passes them to the
-containers only when set to a value other than 0, refuses bad values, refuses the dev API without `ab`, and
-requires `GLM_FULL_MLA=triton`. With K-stop on, K-stop carries its decision probabilities and guard flag in this
-planner's host copy, so a build that would skip while K-stop has such a payload pending plans as stock instead
-(`counts['kstop']` in the status); only builds without a K-stop payload skip.
+window mode, never a serving mode. The shipped profile uses the static path and needs no runtime setter.
+
+`GLM_GREEDY_SAMPLE_FUSE=1` shares the FP32 greedy maximum with the token selection while keeping the same
+logsumexp confidence arithmetic. `GLM_KSTOP_GUARD_FUSE=1` fills the fixed 13-word equality packet and evaluates
+its verdict with two small Triton kernels; the PyNccl collective, packet ABI and refusal point are unchanged.
+
+## Optional switches (off by default)
 
 Spec-sample (`GLM_SPEC_SAMPLE=1`, [docs/spec-sample](spec-sample/README.md)): probabilistic native MTP drafts for
 T>0 with an independent residual noise stream. Boot-time; needs `GLM_MTP_KSTOP=0`.

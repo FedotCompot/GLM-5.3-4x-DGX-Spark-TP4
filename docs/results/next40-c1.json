@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "date": "2026-10-10",
+  "candidate": "static-next40",
+  "scope": "fresh c1 qualification; other README benchmark cells retain their prior provenance",
+  "features": [
+    "glue-f3-index-cache-with-rank-consistent-cold-fallback",
+    "greedy-maximum-confidence-fuse",
+    "synchronous-kstop-guard-fuse",
+    "generic-mla-plan-skip",
+    "kstop-mla-plan-skip"
+  ],
+  "temperature_zero_equality": {
+    "rows_per_repeat": 30,
+    "repeats": 3,
+    "matching_rows": 90,
+    "total_rows": 90,
+    "receipt_sha256": [
+      "c0388e35e6b7444f4d40c599bd180a2e519b7e3d3276c933910aec65bacf486a",
+      "316b791a8e68bf570e6f5ad70043850e2c716d02bac1d8b5ef0fd8acf8eb1da8",
+      "fc9ad1ab33bc3e8da1c2cc704ffbcc214a1b8fd2a518c798b153a9235f8bcf16"
+    ]
+  },
+  "sparkdash": {
+    "settings": {
+      "prompt_type": "prose",
+      "concurrency": 1,
+      "output_tokens": 256,
+      "temperature": 0
+    },
+    "warmup_tokens_per_second": 39.61,
+    "scored_tokens_per_second": [39.60, 39.75, 39.64, 39.85, 39.59],
+    "median_tokens_per_second": 39.64,
+    "minimum_tokens_per_second": 39.59,
+    "maximum_tokens_per_second": 39.85,
+    "receipt_sha256": "653a4a1f32d1daa6bab366baaef62b09d231186e29ce141816f4505eb68efd24"
+  },
+  "rigmark": {
+    "protocol": "1.0.0",
+    "thinking": "on",
+    "reasoning_effort": "low",
+    "runs_per_workload": 5,
+    "decode_tokens_per_second": {
+      "prose": {"median": 30.403, "minimum": 29.404, "maximum": 31.053, "gate": "5/5"},
+      "code": {"median": 42.285, "minimum": 42.031, "maximum": 42.926, "gate": "5/5"},
+      "structured": {"median": 47.670, "minimum": 47.503, "maximum": 47.984, "gate": "5/5"}
+    },
+    "scrub": "clean",
+    "receipt_sha256": "0091121a2fe8e05afe99c8e4378c262a3a2be56ceaa099d86ced1ff06f3094c9"
+  },
+  "runtime_checks": {
+    "glue_f3_armed_layers_per_rank": 57,
+    "generic_plan_skips_observed": true,
+    "kstop_plan_skips_observed": true,
+    "plan_fallbacks": 0
+  },
+  "excluded": [
+    "m4",
+    "dead-row-remap",
+    "k0",
+    "asynchronous-kstop",
+    "k4-tau",
+    "additional-marlin-l2-discard"
+  ]
+}

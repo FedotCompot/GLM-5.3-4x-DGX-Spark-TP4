@@ -89,9 +89,11 @@ class Wiring(unittest.TestCase):
         finally:
             S.Hooks.after_import = original
 
-    def test_default_off_in_profiles_and_startup_order(self):
-        for profile in ('current.env', 'dspark-k3.env'):
-            self.assertNotIn('GLM_SKIP_MLA_PLAN', (ROOT / 'profiles' / profile).read_text())
+    def test_release_profile_static_on_and_startup_order(self):
+        current = (ROOT / 'profiles/current.env').read_text()
+        self.assertIn("GLM_SKIP_MLA_PLAN='1'", current)
+        self.assertIn("GLM_SKIP_MLA_PLAN_KSTOP='1'", current)
+        self.assertNotIn('GLM_SKIP_MLA_PLAN', (ROOT / 'profiles/dspark-k3.env').read_text())
         boot = (BRINGUP / 'sitecustomize.py').read_text()
         self.assertLess(boot.index('glm_full_mla.register()'), boot.index('glm_skip_mla_plan.register()'))
         self.assertLess(boot.index('glm_skip_mla_plan.register()'), boot.index('except BaseException'))

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-10 — next40 decode update
+
+The public profile now carries the measured static next40 bundle: F3 with rank-consistent cold fallback,
+greedy maximum/confidence fusion, the K-stop guard packet/verdict fusion, and generic plus K-stop MLA
+plan skips. The bounded exact-base panel kept temperature-0 output identical across all three 30-row repeats
+(90/90 total). The fresh static candidate moved sparkDash prose c1 from 39.38 to
+39.64 tok/s (+0.66%); RigMark c1 passed 5/5 for prose/code/structured at 30.403/42.285/47.670 tok/s. Existing
+non-c1 benchmark cells remain intact and are labelled as historical measurements. M4, dead-row remap, K0,
+async payload, K4/tau, and additional L2-discard experiments are not included.
+
 ## 2026-10-10 — full-model public release
 
 Det-align stays on; FP8 draft eh_proj and combined INIT qualification default on,

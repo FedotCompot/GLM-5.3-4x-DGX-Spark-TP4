@@ -323,15 +323,15 @@ class Recipe(unittest.TestCase):
 
     def test_kstop_overlay_ships_no_harness(self):
         shipped = sorted(p.name for p in (ROOT/'overlay/kstop').iterdir() if p.name != '__pycache__')
-        self.assertEqual(shipped, ['compat_source_pins.json', 'control.json', 'deadrow_ops.py', 'glm_mtp_kstop.py', 'kstop_policy.py',
-                                   'kstop_runtime.py', 'source_pins.json'])
+        self.assertEqual(shipped, ['compat_source_pins.json', 'control.json', 'deadrow_ops.py', 'glm_mtp_kstop.py',
+                                   'kstop_guard_fuse.py', 'kstop_policy.py', 'kstop_runtime.py', 'source_pins.json'])
         self.assertFalse((ROOT/'overlay/kstop/sitecustomize.py').exists())
 
     def test_profiles_keep_staged_switches_off(self):
         current = (ROOT/'profiles/current.env').read_text()
         dspark = (ROOT/'profiles/dspark-k3.env').read_text()
         for key in ('GLM_GLUE_ROUTER_BF16', 'GLM_GLUE_MOE_WS', 'GLM_GLUE_DSA_IDX_CACHE'):
-            self.assertIn(f"export {key}='{0 if key == 'GLM_GLUE_DSA_IDX_CACHE' else 1}'", current)
+            self.assertIn(f"export {key}='1'", current)
             self.assertIn(f"export {key}='0'", dspark)
         # K-stop and its uniform-batch policy are the native default; DSpark K3 keeps them off.
         for key,value in (('GLM_MTP_KSTOP','1'),('GLM_MTP_KSTOP_UNIFORM_BATCH','k2')):

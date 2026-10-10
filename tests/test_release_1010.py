@@ -17,7 +17,9 @@ class FrozenRelease(unittest.TestCase):
     def test_readme_keeps_full_rigmark_table(self):
         readme = (ROOT/'README.md').read_text()
         self.assertIn('## RigMark 1.0.0 (thinking on, effort low)', readme)
-        self.assertIn('| prose | **30.051** | 29.057–30.674 |', readme)
+        self.assertIn('| prose | **30.403** | 29.404–31.053 |', readme)
+        self.assertIn('| code | 42.285 | 42.031–42.926 |', readme)
+        self.assertIn('| structured | 47.670 | 47.503–47.984 |', readme)
         self.assertIn('| code | 34.89 [37.37] | 46.99 [25.20] | 67.90 [18.33] |', readme)
         self.assertIn('| warm prefix-cache replay | 16,114.3 |', readme)
 
@@ -63,8 +65,10 @@ print(json.dumps([mod['rank_env'](i) for i in range(4)]))
                 cwd=ROOT, env=env, text=True))
         expected = dict(GLM_MOE_DET_ALIGN='1', GLM_DRAFT_HEAD='nvfp4', GLM_DRAFT_HEAD_INIT='1',
                         GLM_DRAFT_EHPROJ='fp8', GLM_DRAFT_EHPROJ_INIT='1', GLM_GLUE_ROUTER_BF16='1',
-                        GLM_GLUE_MOE_WS='1', GLM_GLUE_DSA_IDX_CACHE='0', GLM_MLA_SPLIT_K='32',
-                        GLM_MTP_KSTOP_UNIFORM_BATCH='k2')
+                        GLM_GLUE_MOE_WS='1', GLM_GLUE_DSA_IDX_CACHE='1', GLM_MLA_SPLIT_K='32',
+                        GLM_MTP_KSTOP_UNIFORM_BATCH='k2', GLM_SCREEN_FAILSAFE='1',
+                        GLM_GREEDY_SAMPLE_FUSE='1', GLM_KSTOP_GUARD_FUSE='1',
+                        GLM_SKIP_MLA_PLAN='1', GLM_SKIP_MLA_PLAN_KSTOP='1')
         for rank in ranks:
             self.assertEqual({key: rank[key] for key in expected}, expected)
             self.assertNotIn('GLM_MTP_ROWSELECT', rank)

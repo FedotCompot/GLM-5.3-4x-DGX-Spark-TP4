@@ -1,8 +1,7 @@
-# Glue-lite F1+F2
+# Glue-lite F1+F2+F3
 
-Glue-lite removes two repeated launches around existing vLLM kernels without adding a kernel
-or changing model weights. **F1 router BF16 and F2 MoE workspace reuse default on**;
-**F3 DSA index caching defaults off** and is excluded from this release configuration.
+Glue-lite removes repeated launches around existing vLLM kernels without changing model weights.
+**F1 router BF16, F2 MoE workspace reuse and F3 DSA index caching default on.**
 The adapter is registered after the other bringup hooks so it wraps the composed serving path.
 
 F1 feeds BF16 router logits directly to the CUDA grouped-topk kernel. Its BF16 instantiation widens
@@ -24,17 +23,21 @@ The current profile uses these settings. Each switch is boot-time; use a fresh b
 ```bash
 GLM_GLUE_ROUTER_BF16=1
 GLM_GLUE_MOE_WS=1
-GLM_GLUE_DSA_IDX_CACHE=0
+GLM_GLUE_DSA_IDX_CACHE=1
 GLM_GLUE_ROUTER_EXPECT=target:75,mtp:1
-GLM_GLUE_IDX_EXPECT=0
+GLM_GLUE_IDX_EXPECT=57
+GLM_SCREEN_FAILSAFE=1
 ```
 
-The index arming expectation is zero because F3 is off, matching the frozen release gate.
-The staged F3 implementation expects 57 armed target layers only when explicitly enabled.
+F3 reuses the native MLA backend's shared integer conversion buffer only across the 57 pinned target skip
+layers; MTP and computing layers continue to refresh it. Missing or inconsistent buffer ownership refuses the
+lever. The screen fail-safe votes cold contract results across all TP ranks and restores the stock path before
+capture if any rank refuses.
 
 `tests/test_glue_lite.py` covers source drift, router exactness, workspace reset/reuse and composition.
 `tests/gpu/gpu_bitexact_f1.py` and `tests/gpu/gpu_gate_f2.py` provide GPU checks for the pinned image.
-The F3 code remains staged; FP4x launch validation continues to refuse it.
+The FP4x launcher accepts F3 only with deterministic alignment, canonical alignment off, and the pinned
+75-target/1-MTP router and 57-layer index geometry.
 
 Credit: **knapcio** for the launch ledger, source-pinned adapter, tests and measurements;
 **vLLM grouped-topk and Marlin contributors**, **NVIDIA CUDA** and **PyTorch contributors** for the kernels

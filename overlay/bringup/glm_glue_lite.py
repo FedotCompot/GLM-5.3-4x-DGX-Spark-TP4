@@ -33,7 +33,7 @@ GLM_GLUE_DSA_IDX_CACHE=1 (F3) armed static skip_topk layers of the TARGET model 
 GLM_GLUE_STRICT (default 1): refuse source drift (all PINS, including sparse_utils,
 deepseek_v2/mtp, moe_runner and marlin_utils), refuse any MoE router outside the F1
 contract, and require exact arming counts when GLM_GLUE_ROUTER_EXPECT ("target:75,mtp:1")
-/ GLM_GLUE_IDX_EXPECT ("0" with F3 off in the public release; "57" when F3 is armed) are set.
+/ GLM_GLUE_IDX_EXPECT ("57" in the public profile; "0" only when F3 is explicitly off) are set.
 GLM_GLUE_LITE_BANKABLE=1: install all hooks but decide each switch at call/capture time
 through an external in-boot A/B harness (glm_ab env(); the three names are in its
 KNOWN/DEFAULTS/normalize), so one boot captures control banks and a glue bank. The harness
@@ -50,6 +50,7 @@ import hashlib
 import importlib.abc
 import importlib.util
 import inspect
+import json
 import os
 import sys
 from pathlib import Path
@@ -114,12 +115,34 @@ def wanted(env=None):
             "idx": bank or _on("GLM_GLUE_DSA_IDX_CACHE", env)}
 
 
+def fp4x_idx_allowed(env):
+    import glm_screen_failsafe as fs
+    return fs.options('glue-F3', lambda: _fp4x_idx_allowed(env), False, env)
+
+
+def _fp4x_idx_allowed(env):
+    """Narrow opt-in for the det-align FP4x bank; index conversion ABI is unchanged."""
+    flag = env.get('GLM_GLUE_DSA_IDX_CACHE', '0')
+    if flag in ('', '0'):
+        return False
+    if not (flag == '1' and env.get('GLM_MOE_DET_ALIGN') == '1'
+            and env.get('GLM_MOE_CANON_ALIGN', '0') == '0'
+            and env.get('GLM_GLUE_IDX_EXPECT') == '57'
+            and env.get('GLM_GLUE_ROUTER_EXPECT') == 'target:75,mtp:1'):
+        raise ValueError('FP4x index reuse requires pinned det-align target75/mtp1/index57 contract')
+    return True
+
+
 def _ab():
     ab = sys.modules.get("glm_ab")
     return ab if ab is not None and getattr(ab, "ACTIVE", False) else None
 
 
 def lever(name):
+    import glm_screen_failsafe as fs
+    labels = {LEVERS[0]: 'glue-F1', LEVERS[1]: 'glue-F2', LEVERS[2]: 'glue-F3'}
+    if fs.disabled(labels.get(name, name)):
+        return False
     """Call/capture-time switch: the in-boot A/B bank value when glm_ab is active, else the env."""
     ab = _ab()
     if ab is not None and name in getattr(ab, "KNOWN", ()):
@@ -521,6 +544,26 @@ def _key(req_id, block_table, token_indices, kw):
             str(token_indices.dtype), str(token_indices.device), tuple(sorted((k, repr(v)) for k, v in kw.items())))
 
 
+def idx_buffer(wrapper):
+    """Return the native MLA backend's shared top-k buffer.
+
+    Computing wrappers may also expose the same tensor. Refuse missing storage
+    and disagreement instead of letting a partial F3 arm reach capture.
+    """
+    exposed = getattr(wrapper, 'topk_indices_buffer', None)
+    impl = getattr(getattr(wrapper, 'mla_attn', None), 'impl', None)
+    native = getattr(impl, 'topk_indices_buffer', None)
+    if impl is not None:
+        if native is None:
+            raise RuntimeError('glm-glue-lite: F3 native backend topk buffer missing')
+        if exposed is not None and exposed is not native:
+            raise RuntimeError('glm-glue-lite: F3 wrapper and native backend topk buffers differ')
+        return native
+    if exposed is None:
+        raise RuntimeError('glm-glue-lite: F3 topk buffer accessor missing')
+    return exposed
+
+
 def arm_idx(models, mod_mla, env=None):
     """Arm only static skip layers of the target model; MTP layers are never armed."""
     cls = mod_mla.MultiHeadLatentAttentionWrapper
@@ -533,7 +576,7 @@ def arm_idx(models, mod_mla, env=None):
         for _, m in model.named_modules():
             if type(m) is not cls or not getattr(m, "is_sparse", False):
                 continue
-            buffers.add(id(getattr(m, "topk_indices_buffer", None)))
+            buffers.add(id(idx_buffer(m)))
             if getattr(m, "skip_topk", False) and tag == "target":
                 m._glm_idx_skip_ok = True
                 skip += 1
@@ -606,6 +649,75 @@ def install_idx_convert(mod_fi):
 
 
 # --------------------------------------------------------------------------- registration
+_SCREEN = {}
+_SCREEN_JOURNALS = {}
+
+
+def screen(key, env=None):
+    import glm_screen_failsafe as fs
+    if key not in _SCREEN:
+        journal = fs.Journal()
+        _SCREEN_JOURNALS[key] = journal
+
+        def restore():
+            journal.restore()
+            if key == 'router':
+                STATS['router_armed'].clear()
+                STATS['router_refused'].clear()
+            elif key == 'ws':
+                _WS.clear()
+                _HOME.clear()
+                STATS['ws_alloc'] = 0
+            else:
+                STATS['idx_armed'].clear()
+                _IDX.cache, _IDX.reuse = None, False
+
+        _SCREEN[key] = fs.register(
+            {'router': 'glue-F1', 'ws': 'glue-F2', 'idx': 'glue-F3'}[key], restore, env)
+    return _SCREEN[key]
+
+
+def screen_hook(key, name, fn, env):
+    item = screen(key, env)
+
+    def install(mod):
+        def checked():
+            journal = _SCREEN_JOURNALS[key]
+            start = len(journal.rows)
+            if key == 'router' and hasattr(mod, 'GateLinear'):
+                journal.save(mod.GateLinear, 'forward')
+            elif key == 'ws' and hasattr(mod, 'fused_marlin_moe'):
+                journal.save(mod, 'fused_marlin_moe')
+            elif key == 'idx' and hasattr(mod, 'MultiHeadLatentAttentionWrapper'):
+                journal.save(mod.MultiHeadLatentAttentionWrapper, 'forward')
+            elif key == 'idx' and hasattr(mod, 'triton_convert_req_index_to_global_index'):
+                journal.save(mod, 'triton_convert_req_index_to_global_index')
+            try:
+                return _pinned(name, fn, env)(mod)
+            finally:
+                journal.mark(start)
+        return item.stage(checked)
+    return install
+
+
+def screen_arm(key, models, init, env):
+    item = screen(key, env)
+    journal = _SCREEN_JOURNALS[key]
+    import glm_screen_failsafe as fs
+
+    def checked():
+        if fs.enabled(env):
+            for model in models.values():
+                if model is not None:
+                    for _, module in model.named_modules():
+                        obj = getattr(module, 'gate', None) if key == 'router' else module
+                        if obj is not None and key in ('router', 'idx'):
+                            journal.save(obj, '_glm_bf16_logits' if key == 'router' else '_glm_idx_skip_ok')
+        return init()
+
+    return item.run(checked)
+
+
 def _install_runner(env, w):
     def install(mod):
         cls = mod.GPUModelRunner
@@ -619,16 +731,26 @@ def _install_runner(env, w):
             spec = getattr(self, "speculator", None)
             models = {"target": self.model, "mtp": getattr(spec, "model", None)}
             if w["router"]:
-                import vllm.envs as envs
-                from vllm.platforms import current_platform
-                gl = sys.modules["vllm.model_executor.layers.fused_moe.router.gate_linear"]
-                gr = sys.modules["vllm.model_executor.layers.fused_moe.router.grouped_topk_router"]
-                arm_router(models, gl, gr, envs, current_platform, env)
+                def router_init():
+                    import vllm.envs as envs
+                    from vllm.platforms import current_platform
+                    gl = sys.modules["vllm.model_executor.layers.fused_moe.router.gate_linear"]
+                    gr = sys.modules["vllm.model_executor.layers.fused_moe.router.grouped_topk_router"]
+                    return arm_router(models, gl, gr, envs, current_platform, env)
+                screen_arm('router', models, router_init, env)
             if w["ws"]:
-                ws_prepare(sys.modules["vllm.model_executor.layers.fused_moe.experts.marlin_moe"], self.device)
+                screen_arm('ws', models, lambda: ws_prepare(
+                    sys.modules["vllm.model_executor.layers.fused_moe.experts.marlin_moe"], self.device), env)
             if w["idx"]:
-                arm_idx(models, sys.modules["vllm.model_executor.layers.mla"], env)
+                screen_arm('idx', models, lambda: arm_idx(
+                    models, sys.modules["vllm.model_executor.layers.mla"], env), env)
             STATS["load_model_armed"] += 1
+            sys.stderr.write('GLM_SMALLLEV_GLUE_READY ' + json.dumps(dict(
+                wanted={k: v and screen(k, env).reason is None for k, v in w.items()},
+                router_armed=STATS['router_armed'], idx_armed=STATS['idx_armed'],
+                ws_alloc=STATS['ws_alloc'],
+                ws_bytes=sum(v.numel() * v.element_size() for v in _WS.values()),
+                load_model_armed=STATS['load_model_armed'])) + '\n')
             return out
 
         load_model._glm_glue = True
@@ -649,27 +771,42 @@ def runner_installer(env=None):
     moved to the front at the end of the chain and always runs its mapping, so in the
     bank harness the runner hook goes through it.
     """
-    return _pinned(RUN, _install_runner(env, wanted(env)), env)
+    def install(mod):
+        w = wanted(env)
+        for key, requested in w.items():
+            if requested:
+                screen(key, env).stage(
+                    lambda: check_pin(RUN, mod.__file__) if strict(env) else None)
+        _install_runner(env, w)(mod)
+    return install
 
 
 def register(env=None):
     w = wanted(env)
+    values = os.environ if env is None else env
+    for key, flag in zip(('router', 'ws', 'idx'), LEVERS):
+        if w[key]:
+            def validate(flag=flag):
+                if values.get(flag, '0') not in ('0', '1'):
+                    raise ValueError(flag + ' must be 0 or 1')
+            screen(key, env).stage(validate)
     if not any(w.values()):
         return w
     if w["router"]:
         after_import("vllm.model_executor.layers.fused_moe.router.gate_linear",
-                     _pinned("vllm.model_executor.layers.fused_moe.router.gate_linear", install_router_forward, env))
+                     screen_hook("router", "vllm.model_executor.layers.fused_moe.router.gate_linear", install_router_forward, env))
     if w["ws"]:
         after_import("vllm.model_executor.layers.fused_moe.experts.marlin_moe",
-                     _pinned("vllm.model_executor.layers.fused_moe.experts.marlin_moe", install_moe_ws, env))
+                     screen_hook("ws", "vllm.model_executor.layers.fused_moe.experts.marlin_moe", install_moe_ws, env))
     if w["idx"]:
-        after_import("vllm.model_executor.layers.mla", _pinned("vllm.model_executor.layers.mla", install_idx_mla, env))
+        after_import("vllm.model_executor.layers.mla",
+                     screen_hook("idx", "vllm.model_executor.layers.mla", install_idx_mla, env))
         after_import("vllm.v1.attention.backends.mla.flashinfer_mla_sparse_sm90",
-                     _pinned("vllm.v1.attention.backends.mla.flashinfer_mla_sparse_sm90", install_idx_convert, env))
+                     screen_hook("idx", "vllm.v1.attention.backends.mla.flashinfer_mla_sparse_sm90", install_idx_convert, env))
     for key, names in PIN_ONLY.items():
         if w[key]:
             for name in names:
-                after_import(name, _pinned(name, lambda mod: None, env))
+                after_import(name, screen_hook(key, name, lambda mod: None, env))
     if _ab() is None:
         # Standalone: must be registered after any finder that resolves model_runner via
         # PathFinder (see runner_installer); the composed-startup test is the receipt.

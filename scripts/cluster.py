@@ -138,9 +138,12 @@ def kv_format():
         if ENV.get('GLM_MLA_SPLIT_K') != '32' or ENV.get('GLM_MLA_SPLIT_MAX_ROWS', '36') != '36':
             raise ValueError('FP4x release requires split32 and the 36-row dispatch cap')
         for key in ('GLM_FP4_PROBE_SIM', 'GLM_FP4_PROBE_CAPTURE', 'GLM_DSA_SWA_POOL',
-                    'GLM_GLUE_DSA_IDX_CACHE', 'GLM_SPEC_SAMPLE', 'GLM_TRITON_MLA_PREFILL'):
+                    'GLM_SPEC_SAMPLE', 'GLM_TRITON_MLA_PREFILL'):
             if ENV.get(key, '0') not in ('', '0'):
                 raise ValueError('FP4x does not compose with ' + key)
+        sys.path.insert(0, str(ROOT / 'overlay/bringup'))
+        from glm_glue_lite import fp4x_idx_allowed
+        fp4x_idx_allowed(ENV)
     return mode
 
 
@@ -328,11 +331,23 @@ def remote(rank, command, timeout=45):
 # Opt-in keys that reach the containers only when set to a value other than 0, so the default vector carries
 # none of them: the MLA plan skip (1 = static, ab = in-boot A/B through worker RPCs) and vLLM's dev API, which
 # the A/B mode needs on the private loopback port.
-OPTIONAL_KEYS = ('GLM_SKIP_MLA_PLAN', 'GLM_SKIP_MLA_PLAN_AB_INIT', 'VLLM_SERVER_DEV_MODE', 'GLM_PARAM_HASH')
+OPTIONAL_KEYS = ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE',
+                 'GLM_SKIP_MLA_PLAN', 'GLM_SKIP_MLA_PLAN_AB_INIT',
+                 'GLM_SKIP_MLA_PLAN_KSTOP',
+                 'VLLM_SERVER_DEV_MODE', 'GLM_PARAM_HASH')
 
 
 def optional_env():
     env = {k: ENV[k].strip() for k in OPTIONAL_KEYS if ENV.get(k, '').strip() not in ('', '0')}
+    for key in ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE'):
+        value = ENV.get(key, '0').strip() or '0'
+        if value not in ('0', '1'):
+            raise ValueError(key + ' must be 0 or 1')
+    if env.get('GLM_GREEDY_SAMPLE_FUSE') == '1' and (
+            ENV.get('GLM_MTP_KSTOP') != '1' or ENV.get('GLM_SPEC_SAMPLE', '0') != '0'):
+        raise ValueError('GLM_GREEDY_SAMPLE_FUSE=1 requires native greedy K-stop')
+    if env.get('GLM_KSTOP_GUARD_FUSE') == '1' and ENV.get('GLM_MTP_KSTOP_CONTROL_MODE', 'local') != 'local':
+        raise ValueError('GLM_KSTOP_GUARD_FUSE=1 requires local K-stop control')
     det_align = ENV.get('GLM_MOE_DET_ALIGN', '0')
     if det_align not in ('0', '1'):
         raise ValueError('GLM_MOE_DET_ALIGN must be 0 or 1')
@@ -375,6 +390,11 @@ def optional_env():
         raise ValueError('VLLM_SERVER_DEV_MODE=1 needs GLM_SKIP_MLA_PLAN=ab or GLM_PARAM_HASH=1 or recent KV AB or draft head')
     if 'GLM_SKIP_MLA_PLAN_AB_INIT' in env and mode != 'ab':
         raise ValueError('GLM_SKIP_MLA_PLAN_AB_INIT applies to GLM_SKIP_MLA_PLAN=ab only')
+    kstop_plan_mode = env.get('GLM_SKIP_MLA_PLAN_KSTOP', '0')
+    if kstop_plan_mode not in ('0', '1'):
+        raise ValueError('GLM_SKIP_MLA_PLAN_KSTOP must be 0 or 1')
+    if kstop_plan_mode != '0' and (mode == '0' or ENV.get('GLM_FULL_MLA') != 'triton'):
+        raise ValueError('GLM_SKIP_MLA_PLAN_KSTOP needs the MLA plan overlay and GLM_FULL_MLA=triton')
     # Include zero explicitly so FP4x's default-on scheduler can be disabled.
     adaptive = {k: ENV[k] for k in ('GLM_PREFILL_CHUNK_ADAPTIVE', 'GLM_PREFILL_CHUNK_THRESHOLD') if k in ENV}
     if adaptive.get('GLM_PREFILL_CHUNK_ADAPTIVE', '0') not in ('0', '1'):

@@ -466,6 +466,37 @@ class DsaIndexCacheF3(unittest.TestCase):
             G.arm_idx({"target": layers}, types.SimpleNamespace(MultiHeadLatentAttentionWrapper=_Mla),
                       env={"GLM_GLUE_STRICT": "0"})
 
+    def native_accessors(self):
+        _, layers, *_ = self._setup('CS', arm=False)
+        for layer in layers:
+            layer.mla_attn = types.SimpleNamespace(impl=types.SimpleNamespace(
+                topk_indices_buffer=layer.topk_indices_buffer))
+        del layers[1].topk_indices_buffer
+        return layers, types.SimpleNamespace(MultiHeadLatentAttentionWrapper=_Mla)
+
+    def test_native_skip_accessor_uses_shared_backend_buffer(self):
+        layers, mod = self.native_accessors()
+        result = G.arm_idx({'target': layers}, mod,
+                           env={'GLM_GLUE_STRICT': '1', 'GLM_GLUE_IDX_EXPECT': '1'})
+        self.assertEqual(result['target'], dict(skip_armed=1, other=1))
+        self.assertTrue(layers[1]._glm_idx_skip_ok)
+
+    def test_native_skip_accessor_refuses_split_backend_buffers(self):
+        layers, mod = self.native_accessors()
+        layers[1].mla_attn.impl.topk_indices_buffer = layers[0].topk_indices_buffer.clone()
+        with self.assertRaisesRegex(RuntimeError, 'share one topk buffer'):
+            G.arm_idx({'target': layers}, mod, env={'GLM_GLUE_STRICT': '0'})
+
+    def test_native_accessor_refuses_missing_and_inconsistent_buffers(self):
+        for missing in (True, False):
+            layers, mod = self.native_accessors()
+            if missing:
+                layers[1].mla_attn.impl.topk_indices_buffer = None
+            else:
+                layers[0].mla_attn.impl.topk_indices_buffer = layers[0].topk_indices_buffer.clone()
+            with self.assertRaises(RuntimeError):
+                G.arm_idx({'target': layers}, mod, env={'GLM_GLUE_STRICT': '0'})
+
     def test_width_change_misses(self):
         fi, layers, log, buf, md, _ = self._setup("CS")
         layers[0].forward(None, torch.zeros(3, 4))

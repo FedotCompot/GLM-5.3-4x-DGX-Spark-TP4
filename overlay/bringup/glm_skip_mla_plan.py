@@ -37,6 +37,11 @@ A build that would skip while K-stop has such a payload waiting plans as stock i
 payload rides the same copy as without this switch (counted in `counts['kstop']`, not in
 `planned` or `fallback`). The payload state is set by K-stop identically on every rank. With
 K-stop on, this switch therefore removes only the plans and reads that carry no K-stop payload.
+
+GLM_SKIP_MLA_PLAN_KSTOP=1 additionally preserves the common metadata builder and
+K-stop host copy for synchronous payload builds while omitting only the unused
+SM90 plan. Its successful calls increment `kstop_plan_skipped`; failures are not
+retried after the one-shot payload may have been consumed.
 """
 import hashlib
 import importlib.abc
@@ -51,9 +56,11 @@ WORKER = 'vllm.v1.worker.gpu_worker'
 WORKER_PIN = 'b2e580d74e7259ff2cbc82dabf38a43409ea5584d143880436583d9fc1ceedf1'
 MODES = ('0', '1', 'ab')
 MODE = '0'
+KSTOP_PLAN_MODE = '0'
 # plan: 'none' (never planned), 'fresh' (the last build planned), 'skipped' (the last build did not).
 STATE = dict(on=False, plan='none', run_seen=False, switches=0)
-COUNTS = dict(planned=0, skipped=0, fallback=0, kstop=0)
+KSTOP_PLAN_STATE = dict(on=False, switches=0)
+COUNTS = dict(planned=0, skipped=0, fallback=0, kstop=0, kstop_plan_skipped=0)
 _mod = None
 
 
@@ -80,6 +87,12 @@ def kstop_payload():
         return False
     r = state['runtime']
     return r.pending is not None or r.guard_pending is not None
+
+
+def kstop_plan_skipping(mod):
+    return (KSTOP_PLAN_MODE != '0' and KSTOP_PLAN_STATE['on'] and
+            not STATE['run_seen'] and forward_armed(mod) and
+            mod._SM90_STATE is not None)
 
 
 def guard_wrapper(state):
@@ -110,9 +123,16 @@ def install(mod):
     stock = builder.build
 
     def build(self, common_prefix_len, common_attn_metadata, fast_build=False):
-        if skipping(mod) and kstop_payload():
-            # Plan as stock so K-stop's payload rides the planner copy it was built for.
+        if (skipping(mod) or kstop_plan_skipping(mod)) and kstop_payload():
             COUNTS['kstop'] += 1
+            if kstop_plan_skipping(mod):
+                STATE['plan'] = 'skipped'
+                metadata = super(builder, self).build(
+                    common_prefix_len, common_attn_metadata, fast_build)
+                self._kv_lens_host(common_attn_metadata)
+                COUNTS['kstop_plan_skipped'] += 1
+                return metadata
+            # Plan as stock so K-stop's payload rides the planner copy it was built for.
             metadata = stock(self, common_prefix_len, common_attn_metadata, fast_build)
             if mod._SM90_STATE is not None:
                 STATE['plan'] = 'fresh'
@@ -151,6 +171,8 @@ def status():
     return dict(mode=MODE, installed=_mod is not None, forward_armed=_mod is not None and forward_armed(_mod),
                 on=STATE['on'], skipping=_mod is not None and skipping(_mod), plan=STATE['plan'],
                 run_seen=STATE['run_seen'], switches=STATE['switches'], counts=dict(COUNTS),
+                kstop_plan_mode=KSTOP_PLAN_MODE, kstop_plan_on=KSTOP_PLAN_STATE['on'],
+                kstop_plan_switches=KSTOP_PLAN_STATE['switches'],
                 pin=PIN, worker_pin=WORKER_PIN)
 
 
@@ -227,7 +249,7 @@ class Hooks(importlib.abc.MetaPathFinder):
 
 
 def register(env=None):
-    global MODE
+    global MODE, KSTOP_PLAN_MODE
     e = os.environ if env is None else env
     mode = e.get('GLM_SKIP_MLA_PLAN', '0') or '0'
     if mode not in MODES:
@@ -236,6 +258,9 @@ def register(env=None):
         return False
     if e.get('GLM_FULL_MLA') != 'triton':
         raise ValueError('GLM_SKIP_MLA_PLAN needs GLM_FULL_MLA=triton')
+    kstop_plan_mode = e.get('GLM_SKIP_MLA_PLAN_KSTOP', '0') or '0'
+    if kstop_plan_mode not in ('0', '1'):
+        raise ValueError('GLM_SKIP_MLA_PLAN_KSTOP must be 0 or 1')
     on = True
     if mode == 'ab':
         if e.get('VLLM_SERVER_DEV_MODE') != '1':
@@ -244,8 +269,11 @@ def register(env=None):
         if init not in ('0', '1'):
             raise ValueError('GLM_SKIP_MLA_PLAN_AB_INIT must be 0 or 1')
         on = init == '1'
+    kstop_plan_on = kstop_plan_mode == '1'
     MODE = mode
+    KSTOP_PLAN_MODE = kstop_plan_mode
     STATE['on'] = on
+    KSTOP_PLAN_STATE.update(on=kstop_plan_on, switches=0)
     hooks = Hooks()
     sys.meta_path.insert(0, hooks)
     hooks.after_import(TARGET, install)

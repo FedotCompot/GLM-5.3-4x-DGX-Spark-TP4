@@ -37,6 +37,7 @@ fi
 "${PY[@]}" -B "$ROOT/tests/test_dsa_short.py"
 "${PY[@]}" -B "$ROOT/tests/test_dirty_l2.py"
 "${PY[@]}" -B "$ROOT/tests/test_glue_lite.py"
+"${PY[@]}" -B "$ROOT/tests/test_next40_public.py"
 "${PY[@]}" -B "$ROOT/tests/test_kstop.py"
 "${PY[@]}" -B "$ROOT/tests/test_draft_head.py"
 "${PY[@]}" -B "$ROOT/tests/test_draft_head_init.py"

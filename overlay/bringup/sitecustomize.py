@@ -78,7 +78,7 @@ try:
     glue = [k for k in ('GLM_GLUE_ROUTER_BF16', 'GLM_GLUE_MOE_WS', 'GLM_GLUE_DSA_IDX_CACHE')
             if os.environ.get(k, '0') != '0']
     if glue:
-        if any(os.environ[k] != '1' for k in glue):
+        if os.environ.get('GLM_SCREEN_FAILSAFE', '0') != '1' and any(os.environ[k] != '1' for k in glue):
             raise ValueError('GLM_GLUE_ROUTER_BF16, GLM_GLUE_MOE_WS and GLM_GLUE_DSA_IDX_CACHE must be 0 or 1')
         import glm_glue_lite
         glm_glue_lite.register()

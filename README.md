@@ -4,12 +4,14 @@
 
 Decode tok/s, aggregate **[per stream]**, 256 output tokens, temperature 0.
 Report medians across every scored run: c1 five, c2/c4 three, c8 two; discard only named warmups.
-Measurements belong to the exact release configuration and its October 10 gen-12 boot. This was one complete
+The retained cells belong to the exact October 10 release configuration and its gen-12 boot. That was one complete
 262,144-context sweep with no failed jobs and no best-of selection; see [the gate result](GATE-RESULT.md).
+For the next40 update, c1 is refreshed on the newly qualified candidate; the retained c2/c4/c8 cells remain
+the historical October 10 release measurements. Their separate provenance is recorded with the release receipt.
 
 | Prompt type | c1 | c2 | c4 | c8* |
 |---|---:|---:|---:|---:|
-| prose | 39.38 | 50.90 [25.97] | 65.89 [17.05] | 61.31 [18.09] |
+| prose | **39.64** | 50.90 [25.97] | 65.89 [17.05] | 61.31 [18.09] |
 | code | 45.74 | 54.39 [27.19] | 72.94 [18.38] | 62.78 [19.26] |
 | structured | 48.66 | 67.04 [33.52] | 92.22 [24.20] | 72.64 [24.32] |
 | json | 45.54 | 55.26 [28.40] | 78.98 [20.22] | 70.69 [21.34] |
@@ -26,13 +28,14 @@ Cold prefill, median of three, with prefix-cache state recorded separately:
 
 ## RigMark 1.0.0 (thinking on, effort low)
 
-Release boot, c1 decode medians of five; all workload gates passed.
+The c1 decode cells below are medians of five from the qualified next40 candidate; all workload gates passed.
+The concurrency and prefill tables remain the historical October 10 release measurements.
 
 | Workload | c1 decode tok/s | Observed range |
 |---|---:|---:|
-| prose | **30.051** | 29.057–30.674 |
-| code | 42.372 | 41.664–43.040 |
-| structured | 47.338 | 46.750–47.700 |
+| prose | **30.403** | 29.404–31.053 |
+| code | 42.285 | 42.031–42.926 |
+| structured | 47.670 | 47.503–47.984 |
 
 Code concurrency, aggregate end-to-end tok/s **[per-stream decode]**:
 
@@ -45,7 +48,8 @@ Code concurrency, aggregate end-to-end tok/s **[per-stream decode]**:
 | cold | 904.7 |
 | warm prefix-cache replay | 16,114.3 |
 
-The exact receipt and its SHA256 provenance are recorded in
+The next40 c1 receipt and its SHA256 provenance are recorded in
+[the next40 result](docs/results/next40-c1.json). Historical cells retain the provenance in
 [the reduced-gate notes](docs/release-1010-gate.md#recorded-reduced-gate-and-cell-provenance).
 
 ## Current release configuration
@@ -56,13 +60,16 @@ One shared **264,640-token KV pool (4,135 blocks)** spans the ranks; four simult
 do not fit. The ordinary KV head is 6,318,718,976 bytes per rank, plus the display carveout.
 The recent-FP8 bank is disabled. The fast loader is the default.
 
-Deterministic MoE alignment, the draft-only NVFP4 LM head, **FP8 draft eh_proj**, and **glue-lite F1+F2** are on.
+Deterministic MoE alignment, the draft-only NVFP4 LM head, **FP8 draft eh_proj**, and **glue-lite F1+F2+F3** are on.
 Native confidence stopping retains K3 at c1 and K2 in multi-request batches. Decode/prefill time-slicing remains
-4096/N40. Row selection is off, F3 index caching is off, and cache trim and async v2 are absent from this export.
+4096/N40. The greedy maximum/confidence operation, K-stop guard packet/verdict, and unused MLA planning are fused
+or skipped on their qualified static paths. Row selection, cache trim and async v2 remain absent from this export.
 Split32 MLA and the existing rotary storage retain the public release layout.
-This configuration passed the owner-approved reduced release gate on October 10, 2026 and is serving under the
-watchdog. The exact scope, carried evidence and deliberately skipped full-gate phases are recorded in
-[GATE-RESULT](GATE-RESULT.md).
+The base configuration passed the owner-approved reduced release gate on October 10, 2026. The added next40
+paths retained exact temperature-0 output across three 30-row runs, passed fresh sparkDash and RigMark c1
+qualification, and preserved the base release's context and memory layout. The base gate scope and carried
+evidence are recorded in [GATE-RESULT](GATE-RESULT.md); the added c1 evidence is in
+[the next40 result](docs/results/next40-c1.json).
 
 ## Draft projection and launch overhead
 
@@ -73,9 +80,10 @@ restores the native BF16 projection and disables the draft head, which fails thi
 [eh_proj details](docs/eh_proj.md).
 
 Glue-lite F1 feeds BF16 router logits directly into vLLM's widening grouped-topk path; F2 reuses the Marlin MoE
-workspace after the kernel's existing lock reset. The glue defaults are `GLM_GLUE_ROUTER_BF16=1`,
-`GLM_GLUE_MOE_WS=1`, `GLM_GLUE_DSA_IDX_CACHE=0`, `GLM_GLUE_IDX_EXPECT=0`, and
-`GLM_GLUE_ROUTER_EXPECT=target:75,mtp:1`; the zero index expectation matches F3 being off.
+workspace after the kernel's existing lock reset; F3 reuses the target's native shared DSA index-conversion buffer
+across its 57 static skip layers. The glue defaults are `GLM_GLUE_ROUTER_BF16=1`,
+`GLM_GLUE_MOE_WS=1`, `GLM_GLUE_DSA_IDX_CACHE=1`, `GLM_GLUE_IDX_EXPECT=57`, and
+`GLM_GLUE_ROUTER_EXPECT=target:75,mtp:1`. A cold all-rank screen vote disables a failed glue lever before capture.
 [Glue-lite details and exactness boundaries](docs/glue-lite.md).
 
 ## Reproducibility and responsiveness
@@ -111,7 +119,7 @@ S-class supplement ran fresh 16K x2 and 250K x2 on the same release boot.
 | Mixed-load soak | PASS; requested 15 min, observed 1071.1 s; 27 requests, 0 errors, 0 preemptions; quiet drift -0.02/0.01/-0.02/0.02 GiB (ranks 0/1/2/3). |
 | Draft-head + eh_proj INIT | 4/4 ranks ON/ready, combined FP8 eh_proj qualified; 16 cases and 342/342/342/342 rows per rank; 0 failed; target head bit-exact on every rank. |
 | Temperature-0 sequential repeats on this boot | 30/30 prompts identical across 3 repeats; 30/30 native-ID equality to carried stack-g2/glue-t0. |
-| RigMark 1.0.0, thinking on, effort low | prose 30.05 tok/s; code 42.37 tok/s; structured 47.34 tok/s; code c4 aggregate 67.90 tok/s; 8K cold prefill 905 tok/s; all workload gates passed. |
+| RigMark 1.0.0, thinking on, effort low | fresh c1: prose 30.40 tok/s, code 42.29 tok/s, structured 47.67 tok/s; retained release cells: code c4 aggregate 67.90 tok/s, 8K cold prefill 905 tok/s; all workload gates passed. |
 
 APC stayed on: repeat 2 at 16K (0.6 s TTFT) and 250K (1.2 s TTFT) is a prefix-cache-hit replay, not an independent prefill.
 
@@ -145,7 +153,8 @@ with idle reset, and an 1800 s boot deadline. APC stays on. [Memory layout](docs
 | Short-context DSA | All-selected short contexts skip unnecessary indexer work | `GLM_INDEXER_SHORTCUT=1` | Guess-Verify-Refine idea; DeepSeek DSA; vLLM |
 | Pad hygiene and c2 reuse | Padded rows reuse live experts; c2 replays existing exact graph | `GLM_PAD_HYGIENE=1`, `GLM_MTP_KSTOP_CAPTURE_LAYOUT=reuse` | vLLM MoE/graph contributors; knapcio |
 | FP8 draft eh_proj | Replicated draft-only projection; combined INIT qualification | `GLM_DRAFT_EHPROJ=fp8`, `GLM_DRAFT_EHPROJ_INIT=1` | knapcio; vLLM FP8 Marlin contributors; NVIDIA FP8; PyTorch |
-| Glue-lite F1+F2 | Remove router cast and repeated MoE workspace reset; token-identical panel | `GLM_GLUE_ROUTER_BF16=1`, `GLM_GLUE_MOE_WS=1`; F3 off | knapcio; vLLM grouped-topk and Marlin contributors |
+| Glue-lite F1+F2+F3 | Remove router cast and repeated MoE workspace reset; reuse the pinned shared DSA index buffer | `GLM_GLUE_ROUTER_BF16=1`, `GLM_GLUE_MOE_WS=1`, `GLM_GLUE_DSA_IDX_CACHE=1` | knapcio; vLLM grouped-topk, Marlin and sparse-MLA contributors |
+| Decode launch reductions | Share greedy maximum, fuse guard packet/verdict, skip unused generic and K-stop MLA plans | `GLM_GREEDY_SAMPLE_FUSE=1`, `GLM_KSTOP_GUARD_FUSE=1`, `GLM_SKIP_MLA_PLAN=1`, `GLM_SKIP_MLA_PLAN_KSTOP=1` | knapcio; PyTorch, Triton, vLLM and FlashInfer contributors |
 | Sparse MLA and dirty L2 | GB10-compatible split32 MLA; discard consumed partials | `GLM_FULL_MLA=triton`, `GLM_DIRTY_L2=discard` | CosmicRaisins; Matt Mastracci ideas; NVIDIA PTX; Triton |
 | Switched RoCE | RDMA TP collectives on both rails | `GLM_ROCE_ALLREDUCE=1` | b12x/RoCEnante; Luke Alonso; Jason Cook; tonyd2wild; rhys101 |
 | Fast loading and shard selection | Bounded copies; MTP reads its five shards | `GLM_FAST_LOAD=1`, `GLM_MTP_ONLY_LOAD=1` | Willian-Zhang; vLLM; knapcio |
