@@ -31,7 +31,7 @@ The simulator groups remain on `exp/nvfp4-wsim`: `GLM_NVFP4_WSIM=shared,indexer,
 
 ## Mac evidence and indexer decision
 
-[mac-real-samples.json](mac-real-samples.json): **23 real matrices, 551,878,656 elements, zero bit mismatches** against the independently pinned simulator's pre-INT8 QDQ reference. Shared3/indexer3/dense3/MTP14, including routed experts0/255 and MTP attention/shared. Original source hashes are unchanged. Partial sidecar `/private/tmp/glm53-nvfp4more-real-samples` cannot pass the full inventory loader and cannot serve. This is not an all-matrix non-attention audit or full-model quality result.
+[mac-real-samples.json](mac-real-samples.json): **23 real matrices, 551,878,656 elements, zero bit mismatches** against the independently pinned simulator's pre-INT8 QDQ reference. Shared3/indexer3/dense3/MTP14, including routed experts0/255 and MTP attention/shared. Original source hashes are unchanged. Partial sidecar `temporary/glm53-nvfp4more-real-samples` cannot pass the full inventory loader and cannot serve. This is not an all-matrix non-attention audit or full-model quality result.
 
 [indexer-sensitivity.json](indexer-sensitivity.json): isolated scoring with real layer1 BF16 weights, seeded synthetic activations, 4096 keys, 8 queries and topk2048 retained **93.927%** of selections on average. About6.1% changed. Weight NRMSE is about9.3%. The screen omits trained activation distributions, RoPE and the actual FP8 index-cache scoring path; it cannot predict production overlap. For a score perturbation bounded by delta, a sufficient top-k stability condition is `score[k]-score[k+1] > 2*delta`; the measured synthetic margins do not satisfy that condition. RMS weight error does not bound ranking changes.
 

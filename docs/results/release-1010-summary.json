@@ -27,10 +27,12 @@
     ],
     "not_run_on_exact_release": [
       "qeval_75_x3",
-      "needle_16k_x2",
-      "needle_250k_x2",
       "time_slicing_scenario",
       "long_soak"
+    ],
+    "fresh_after_gate_same_boot": [
+      "needle_16k_x2",
+      "needle_250k_x2"
     ]
   },
   "measured_private_serving_source_commit": "6f5235dc14549677704d10e6564277883686e60d",
@@ -181,5 +183,97 @@
     "api_context_tokens": 262144,
     "admin_context_tokens": 262144
   },
-  "provenance": "docs/release-1010-gate.md#recorded-reduced-gate-and-cell-provenance"
+  "provenance": "docs/release-1010-gate.md#recorded-reduced-gate-and-cell-provenance",
+  "needle_supplement": {
+    "boot": "glm53full-cand3win7-w4stack-12",
+    "class": "S",
+    "read_only": true,
+    "after_gate": true,
+    "verdict": "PASS",
+    "receipt": "diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/summary.json",
+    "receipt_sha256": "e2b8d39b5840d27c82d104c8ac7c24ff620d0d682a9f0cdcf659dab53b567568",
+    "apc_on": true,
+    "repeat_2": "prefix-cache-hit replay, not an independent prefill",
+    "runs": [
+      {
+        "target_input_tokens": 16384,
+        "prompt_tokens": 16154,
+        "repeat": 1,
+        "score": "8/10",
+        "registry_all_correct": true,
+        "finish_reason": "stop",
+        "ttft_s": 20.640466750133783,
+        "missed_fields": [
+          "alias_result",
+          "matching_count"
+        ]
+      },
+      {
+        "target_input_tokens": 16384,
+        "prompt_tokens": 16154,
+        "repeat": 2,
+        "score": "8/10",
+        "registry_all_correct": true,
+        "finish_reason": "stop",
+        "ttft_s": 0.5577987502329051,
+        "missed_fields": [
+          "alias_result",
+          "matching_count"
+        ]
+      },
+      {
+        "target_input_tokens": 250000,
+        "prompt_tokens": 249837,
+        "repeat": 1,
+        "score": "8/10",
+        "registry_all_correct": true,
+        "finish_reason": "stop",
+        "ttft_s": 383.260925791692,
+        "missed_fields": [
+          "alias_result",
+          "matching_count"
+        ]
+      },
+      {
+        "target_input_tokens": 250000,
+        "prompt_tokens": 249837,
+        "repeat": 2,
+        "score": "8/10",
+        "registry_all_correct": true,
+        "finish_reason": "stop",
+        "ttft_s": 1.1829366250894964,
+        "missed_fields": [
+          "alias_result",
+          "matching_count"
+        ]
+      }
+    ]
+  },
+  "needle_field_survey": {
+    "since": "2026-10-05",
+    "interpretation": "long-standing model/probe limitation, not a regression of this release",
+    "survey": {
+      "runs": 63,
+      "matching_count_correct": 0,
+      "matching_count_missed": 63,
+      "alias_result_correct": 47,
+      "alias_result_missed": 16
+    },
+    "supplementary": {
+      "runs": 4,
+      "matching_count_correct": 0,
+      "matching_count_missed": 4,
+      "alias_result_correct": 0,
+      "alias_result_missed": 4
+    },
+    "combined": {
+      "runs": 67,
+      "matching_count_correct": 0,
+      "matching_count_missed": 67,
+      "alias_result_correct": 47,
+      "alias_result_missed": 20
+    },
+    "receipt": "diagnostics/glm53-full-20261009-night/pubrel/needle-followup-1010/needle-survey.json",
+    "receipt_sha256": "ecffe037a72317e1daed7faa6e5f9ded0fbb6e9a2cb5fc168f8014b3f8473c1c"
+  }
 }

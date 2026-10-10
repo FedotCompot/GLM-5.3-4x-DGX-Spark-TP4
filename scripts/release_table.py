@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import statistics
 
@@ -63,14 +64,14 @@ def tables(rows):
         if any(x.get('error') for x in selected):
             raise ValueError('failed prefill result')
         tps.append(f"{statistics.median(positive(x['prefillTps']) for x in selected):.0f}")
-        ttft.append(f"{statistics.median(positive(x['ttftMs']) for x in selected)/1000:.2f}")
+        ttft.append(f"{statistics.median(positive(x['ttftMs']) for x in selected)/1000:.1f}")
     out += ['', '| Input | 4K | 8K | 16K | 32K |', '|---|---:|---:|---:|---:|',
             '| cold prefill tok/s | ' + ' | '.join(tps) + ' |',
             '| time to first token (s) | ' + ' | '.join(ttft) + ' |']
     return '\n'.join(out) + '\n'
 
 
-def qualification(run):
+def qualification(run, needle_supplement=None):
     """Render the reduced gate without upgrading carried or absent measurements."""
     sources = {}
 
@@ -102,8 +103,9 @@ def qualification(run):
             raise ValueError(f'one carried {group}/{suffix} required')
         return json.loads(Path(names[0]).read_text())
 
-    def ranks(values):
-        return '/'.join(str(values[str(i)]) for i in range(4))
+    def ranks(values, precision=None):
+        return '/'.join(format(values[str(i)], f'.{precision}f' if precision is not None else 'g')
+                        for i in range(4))
 
     cells = []
 
@@ -133,9 +135,47 @@ def qualification(run):
          'passed/items/truncated; results[].pass/category; decision/release_decision; phases')
     needles = carry('needles_g6', '/summary.json')
     small = [r for r in needles['runs'] if r['target_input_tokens'] == 16384]
-    cell('Needle 16K, carried twice',
-         f"Carried w4-ehproj-g6: {', '.join(r['grade']['score_over_n'] for r in small)}; "
-         'not rerun on release boot.', ['needles_g6', 'release-run.json'], 'runs[].grade.score_over_n; phases')
+    def supplemented_cell(length):
+        summary_path = needle_supplement/'summary.json'
+        sources[summary_path] = hashlib.sha256(summary_path.read_bytes()).hexdigest()
+        summary = json.loads(summary_path.read_text())
+        if (summary['boot_label'] != boot+' release S-class 250K'
+                or summary['verdict']['status'] != 'PASS'
+                or len(summary['runs']) != 4
+                or {(r['target_input_tokens'], r['repeat']) for r in summary['runs']}
+                   != {(n, r) for n in (16384, 250000) for r in (1, 2)}):
+            raise ValueError('completed same-boot paired needle supplement required')
+        rows = sorted((r for r in summary['runs'] if r['target_input_tokens'] == length),
+                      key=lambda r: r['repeat'])
+        paths = [summary_path]
+        for row in rows:
+            path = needle_supplement/f"run-{length}-{row['repeat']}.json"
+            sources[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+            if (row != json.loads(path.read_text()) or row['finish_reason'] != 'stop'
+                    or not row['grade']['registry_all_correct']):
+                raise ValueError('supplement run binding or registry/finish gate differs')
+            paths.append(path)
+        prompt = rows[0]['usage']['prompt_tokens']
+        missed = [key for key, field in rows[0]['grade']['fields'].items() if not field['correct']]
+        if any(row['usage']['prompt_tokens'] != prompt or
+               [key for key, field in row['grade']['fields'].items() if not field['correct']] != missed
+               for row in rows):
+            raise ValueError('supplement repeats have different prompt counts or missed fields')
+        label = '16K' if length == 16384 else '250K'
+        ttft = ' / '.join(f"{r['ttft_seconds']:.1f}" for r in rows)
+        cell(f'Needle {label}, fresh twice',
+             f"Fresh same-boot S-class after the gate: {', '.join(r['grade']['score_over_n'] for r in rows)} "
+             f"({prompt} prompt tokens); missed " + ' and '.join(f'`{key}`' for key in missed) + '; '
+             f"all registry fields correct; both finish=stop; TTFT {ttft} s; PASS.",
+             [Path(os.path.relpath(path, run)).as_posix() for path in paths],
+             'runs[].grade.score_over_n/fields; usage.prompt_tokens; finish_reason; ttft_seconds; verdict.status')
+
+    if needle_supplement is not None:
+        supplemented_cell(16384)
+    else:
+        cell('Needle 16K, carried twice',
+             f"Carried w4-ehproj-g6: {', '.join(r['grade']['score_over_n'] for r in small)}; "
+             'not rerun on release boot.', ['needles_g6', 'release-run.json'], 'runs[].grade.score_over_n; phases')
     needle = read('needle/summary.json')
     if needle['boot_label'] != boot or len(needle['runs']) != 1:
         raise ValueError('one release-boot needle run required')
@@ -143,10 +183,13 @@ def qualification(run):
     missed = [key for key, field in n['grade']['fields'].items() if not field['correct']]
     cell('Needle 128K, one run',
          f"{len(needle['runs'])} run, {n['grade']['score_over_n']}; missed `{', '.join(missed)}`; "
-         f"TTFT {n['ttft_seconds']} s; {needle['verdict']['status']} under the reduced rule.",
+         f"TTFT {n['ttft_seconds']:.1f} s; {needle['verdict']['status']} under the reduced rule.",
          ['needle/summary.json'], 'runs; grade.score_over_n/fields; ttft_seconds; verdict.status')
-    cell('Needle 250K', 'Not run; no carried 250K receipt in the reduced scope.',
-         ['release-run.json', 'COMPLETE.json'], 'phases; carried.groups (no 250K measurement)')
+    if needle_supplement is not None:
+        supplemented_cell(250000)
+    else:
+        cell('Needle 250K', 'Not run; no carried 250K receipt in the reduced scope.',
+             ['release-run.json', 'COMPLETE.json'], 'phases; carried.groups (no 250K measurement)')
     stress = read('done-stress.json')['result']
     memory = read('stress/memory-summary.json')
     trace = read('stress/c4/c4-trace.json')
@@ -163,8 +206,8 @@ def qualification(run):
     cell('c4 shared-pool and single maximum-context stress',
          f"{stress['status']}; c4 {stress['geometry']['c4_prompt_tokens']}+{stress['output_tokens']} each, "
          f"single {stress['single_prompt']}+{single['usage']['completion_tokens']}; "
-         f"rank 0/1/2/3 minima {ranks(stress['min_GiB'])} GiB; "
-         f"swap maxima {ranks(swap)} KiB; preemptions {preempt}.",
+         f"rank 0/1/2/3 minima {ranks(stress['min_GiB'], 2)} GiB; "
+         f"swap maxima {ranks(swap)} KiB; preemptions {preempt:g}.",
          ['done-stress.json', 'stress/memory-summary.json', 'stress/c4/c4-trace.json', 'stress/single.json']
          + [f'stress/rank{i}-memory.jsonl' for i in range(4)],
          'result.geometry/single_prompt/output_tokens/min_GiB; problem; trace[].preemptions; usage; max(SwapTotal-SwapFree)')
@@ -175,18 +218,18 @@ def qualification(run):
     if receipt['settings']['extra_body']['chat_template_kwargs']['reasoning_effort'] != 'low':
         raise ValueError('RigMark effort low required')
     cell('Prefix-cache first/repeat and retained-cache stress',
-         f"8K cold/replay prefill {rig['rates']['prefill_8k_cold']}/{rig['rates']['prefill_8k_warm_replay']} tok/s; "
-         f"stress APC hits/queries {apc['hit_delta']}/{apc['query_delta']} tokens; "
-         f"retained-cache quiet minima {'/'.join(map(str, mem['quiet_min_GiB']))} GiB (ranks 0/1/2/3).",
+         f"8K cold/replay prefill {rig['rates']['prefill_8k_cold']:.0f}/{rig['rates']['prefill_8k_warm_replay']:.0f} tok/s; "
+         f"stress APC hits/queries {apc['hit_delta']:g}/{apc['query_delta']:g} tokens; "
+         f"retained-cache quiet minima {'/'.join(f'{v:.2f}' for v in mem['quiet_min_GiB'])} GiB (ranks 0/1/2/3).",
          ['rigmark-summary.json', 'rigmark-receipt.json', 'stress/c4/apc.json', 'done-memstress.json'],
          'rates.prefill_8k_cold/prefill_8k_warm_replay; hit_delta/query_delta; quiet_min_GiB')
     soak = read('done-soak.json')['result']
     if soak['boot'] != boot or soak['verdict'] != 'PASS' or soak['soak_s'] < 900:
         raise ValueError('completed release-boot soak >=900 seconds required')
     cell('Mixed-load soak',
-         f"{soak['verdict']}; requested {soak['minutes']} min, observed {soak['soak_s']} s; "
-         f"{soak['requests']} requests, {soak['errors']} errors, {soak['preemptions']} preemptions; "
-         f"quiet drift {ranks(soak['mem_drift_GiB'])} GiB (ranks 0/1/2/3).",
+         f"{soak['verdict']}; requested {soak['minutes']:g} min, observed {soak['soak_s']:.1f} s; "
+         f"{soak['requests']} requests, {soak['errors']} errors, {soak['preemptions']:g} preemptions; "
+         f"quiet drift {ranks(soak['mem_drift_GiB'], 2)} GiB (ranks 0/1/2/3).",
          ['done-soak.json', 'soak/RESULT.json'], 'result.minutes/soak_s/requests/errors/preemptions/mem_drift_GiB')
     read('soak/RESULT.json')
     init = read('done-initgate1.json')
@@ -222,9 +265,9 @@ def qualification(run):
     if rig['rc'] or not all(rig['gates'].values()):
         raise ValueError('RigMark workload gates must pass')
     cell(f"RigMark {receipt['protocol']['version']}, thinking on, effort low",
-         '; '.join(f"{kind} {rig['rates'][kind]} tok/s" for kind in ('prose', 'code', 'structured'))
-         + f"; code c4 aggregate {rig['rates']['code_c4_aggregate']} tok/s; "
-         f"8K cold prefill {rig['rates']['prefill_8k_cold']} tok/s; all workload gates passed.",
+         '; '.join(f"{kind} {rig['rates'][kind]:.2f} tok/s" for kind in ('prose', 'code', 'structured'))
+         + f"; code c4 aggregate {rig['rates']['code_c4_aggregate']:.2f} tok/s; "
+         f"8K cold prefill {rig['rates']['prefill_8k_cold']:.0f} tok/s; all workload gates passed.",
          ['rigmark-summary.json', 'rigmark-receipt.json'], 'rates/gates; protocol.version; settings.extra_body')
     sources[run/'sparkdash.jsonl'] = hashlib.sha256((run/'sparkdash.jsonl').read_bytes()).hexdigest()
     dash = read('dash-vs-det-release.json')
@@ -247,8 +290,12 @@ def qualification(run):
                   'Fresh phases: ' + ', '.join(frozen['phases']) + '.',
                   'Qpanel and qeval were carried; the time-slicing scenario and long soak were dropped.',
                   'Fresh soak used the reduced duration; fresh needle used only 128K x1.',
-                  '16K x2 is carried from w4-ehproj-g6. 250K was neither run nor carried.',
+                  ('16K x2 was carried from w4-ehproj-g6 during the gate. The published 16K and 250K cells use '
+                   'fresh same-boot S-class receipts collected after the gate.' if needle_supplement is not None else
+                   '16K x2 is carried from w4-ehproj-g6. 250K was neither run nor carried.'),
                   'The qeval regression decisions remain KILL; reduced PASS does not upgrade them.', '',
+                  'Display precision: TTFT and observed durations 1 decimal; GiB and decode tok/s 2 decimals; '
+                  'prefill tok/s rounded to integers. Counts stay integral; raw receipts retain full precision.', '',
                   '| README cells | Receipt references | Fields / interpretation |', '|---|---|---|',
                   '| sparkDash: prose/code/structured/json x c1/c2/c4/c8 (16 cells), cold prefill and TTFT x 4K/8K/16K/32K (8 cells) | `sparkdash.jsonl`, `dash-vs-det-release.json` | Every scored run; `tables()` median/format rules. Comparison columns are not published. |']
     provenance += [f"| {label} | " + ', '.join(f'`{p}`' for p in paths) + f' | {fields} |'
@@ -267,6 +314,7 @@ def main():
     parser.add_argument('receipt', type=Path)
     parser.add_argument('--gate-run', type=Path, help='also render reduced-gate quality cells')
     parser.add_argument('--provenance', type=Path, help='write portable receipt paths and SHA256s')
+    parser.add_argument('--needle-supplement', type=Path, help='include paired same-boot 16K/250K S-class receipts')
     args = parser.parse_args()
     rows = [json.loads(line) for line in args.receipt.read_text().splitlines() if line.strip()]
     try:
@@ -274,12 +322,12 @@ def main():
         if args.gate_run:
             if args.receipt.resolve() != (args.gate_run/'sparkdash.jsonl').resolve():
                 raise ValueError('sparkDash receipt must belong to gate run')
-            quality, provenance = qualification(args.gate_run)
+            quality, provenance = qualification(args.gate_run, args.needle_supplement)
             output += '\n' + quality
             if args.provenance:
                 args.provenance.write_text(provenance)
-        elif args.provenance:
-            raise ValueError('--provenance requires --gate-run')
+        elif args.provenance or args.needle_supplement:
+            raise ValueError('--provenance and --needle-supplement require --gate-run')
         print(output, end='')
     except (KeyError, TypeError, ValueError) as exc:
         parser.error(str(exc))

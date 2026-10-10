@@ -95,7 +95,7 @@ print(json.dumps([mod['rank_env'](i) for i in range(4)]))
     def test_table_medians_and_incomplete_or_failed_receipts(self):
         rows = self.receipt()
         self.assertIn('| prose | 32.00 | 31.00 [16.00]', tables(rows))
-        self.assertIn('| time to first token (s) | 4.20 | 4.20 | 4.20 | 4.20 |', tables(rows))
+        self.assertIn('| time to first token (s) | 4.2 | 4.2 | 4.2 | 4.2 |', tables(rows))
         with self.assertRaises(ValueError):
             tables(rows[1:])
         rows[0]['result']['results'][0]['streamsFailed'] = 1

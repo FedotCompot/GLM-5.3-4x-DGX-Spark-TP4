@@ -5,7 +5,8 @@
 The exact gen-12 configuration passed the owner-approved reduced gate on October 10, 2026 and was handed to
 `glm-serving-watch`. The reduced scope ran fresh boot/receipts, T=0, full sparkDash, RigMark, memory stress,
 15-minute soak, one 128K needle, collection and handover/verify. It carried hashed quality-panel, 16K/128K needle
-and glue exactness evidence. It did not run qeval x3 or exact-config 16K/250K needles. See `GATE-RESULT.md` and
+and glue exactness evidence. Qeval x3 was not run; exact-config 16K x2 and 250K x2 subsequently passed
+a read-only S-class supplement on the same release boot after the gate. See `GATE-RESULT.md` and
 `docs/results/release-1010-summary.json`; the full procedure below remains the stricter reference protocol.
 
 Offline preparation does not run this gate. Pin the candidate's commit, effective `.env` selectors,
@@ -116,16 +117,18 @@ The public profile boot equivalences above bind this serving vector to the expor
 Fresh phases: preboot, serve, receipts, smoke, bootmin, mem, initgate, t0, dash, rigmark, memstress, stress, soak, needle, collect, handover, verify.
 Qpanel and qeval were carried; the time-slicing scenario and long soak were dropped.
 Fresh soak used the reduced duration; fresh needle used only 128K x1.
-16K x2 is carried from w4-ehproj-g6. 250K was neither run nor carried.
+16K x2 was carried from w4-ehproj-g6 during the gate. The published 16K and 250K cells use fresh same-boot S-class receipts collected after the gate.
 The qeval regression decisions remain KILL; reduced PASS does not upgrade them.
+
+Display precision: TTFT and observed durations 1 decimal; GiB and decode tok/s 2 decimals; prefill tok/s rounded to integers. Counts stay integral; raw receipts retain full precision.
 
 | README cells | Receipt references | Fields / interpretation |
 |---|---|---|
 | sparkDash: prose/code/structured/json x c1/c2/c4/c8 (16 cells), cold prefill and TTFT x 4K/8K/16K/32K (8 cells) | `sparkdash.jsonl`, `dash-vs-det-release.json` | Every scored run; `tables()` median/format rules. Comparison columns are not published. |
 | Quality admission; qeval status | `qpanel_B`, `qeval_g5`, `qeval_g6`, `release-run.json` | passed/items/truncated; results[].pass/category; decision/release_decision; phases |
-| Needle 16K, carried twice | `needles_g6`, `release-run.json` | runs[].grade.score_over_n; phases |
+| Needle 16K, fresh twice | `../run-1010d-s250k/summary.json`, `../run-1010d-s250k/run-16384-1.json`, `../run-1010d-s250k/run-16384-2.json` | runs[].grade.score_over_n/fields; usage.prompt_tokens; finish_reason; ttft_seconds; verdict.status |
 | Needle 128K, one run | `needle/summary.json` | runs; grade.score_over_n/fields; ttft_seconds; verdict.status |
-| Needle 250K | `release-run.json`, `COMPLETE.json` | phases; carried.groups (no 250K measurement) |
+| Needle 250K, fresh twice | `../run-1010d-s250k/summary.json`, `../run-1010d-s250k/run-250000-1.json`, `../run-1010d-s250k/run-250000-2.json` | runs[].grade.score_over_n/fields; usage.prompt_tokens; finish_reason; ttft_seconds; verdict.status |
 | c4 shared-pool and single maximum-context stress | `done-stress.json`, `stress/memory-summary.json`, `stress/c4/c4-trace.json`, `stress/single.json`, `stress/rank0-memory.jsonl`, `stress/rank1-memory.jsonl`, `stress/rank2-memory.jsonl`, `stress/rank3-memory.jsonl` | result.geometry/single_prompt/output_tokens/min_GiB; problem; trace[].preemptions; usage; max(SwapTotal-SwapFree) |
 | Prefix-cache first/repeat and retained-cache stress | `rigmark-summary.json`, `rigmark-receipt.json`, `stress/c4/apc.json`, `done-memstress.json` | rates.prefill_8k_cold/prefill_8k_warm_replay; hit_delta/query_delta; quiet_min_GiB |
 | Mixed-load soak | `done-soak.json`, `soak/RESULT.json` | result.minutes/soak_s/requests/errors/preemptions/mem_drift_GiB |
@@ -197,19 +200,101 @@ Carried group references resolve to the complete file list below; hashes were ve
 | `diagnostics/glm53-full-20261009-night/relgate/run-1010d/stress/rank2-memory.jsonl` | `ac12d01239fe867b3ebf75e9511b7f3341d0ff71620c13af603cfccfbc833f78` |
 | `diagnostics/glm53-full-20261009-night/relgate/run-1010d/stress/rank3-memory.jsonl` | `fa0a6c8ae38b8b126d8f8931fd886e3fbd790a8092644f02650789ea8d375014` |
 | `diagnostics/glm53-full-20261009-night/relgate/run-1010d/stress/single.json` | `6d3c9d691deb441c3262ec6ff1786954e56c9b8f64ca10816b5a742297c78d57` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/run-16384-1.json` | `376811634109b5a1f1ea37c1c12b076d52cffd8bd5232d362e5cfd6252ab2ac9` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/run-16384-2.json` | `7ccec30624d94416ba9fe09fd9188a93918b5b08cfdc967227481d62e2ae450c` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/run-250000-1.json` | `3d2bc403fa8af524e96a0c124b867bb38c02f4244726a5b8a8603b7c3d5f7eef` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/run-250000-2.json` | `f0bd03127a8a3038cd29079167b29d27a620884782c58ab12e010e0359d13efd` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/summary.json` | `e2b8d39b5840d27c82d104c8ac7c24ff620d0d682a9f0cdcf659dab53b567568` |
 | `diagnostics/glm53-full-20261009-night/stack/driver/stack-g2/A-t0/result.json` | `772877f9180edcff2ba305f31f73dad8b76ecd72eddf013404ce47a39700a9b2` |
 | `diagnostics/glm53-full-20261009-night/stack/driver/stack-g2/decisions/glue.json` | `837a377568694d7e1ea0e150d062e76ff1e1039a868129b3b53d836fad333bc0` |
 | `diagnostics/glm53-full-20261009-night/stack/driver/stack-g2/done-verify.json` | `458f93675ef8b6e8ae6bb745d3db7ef99f01ec5db2bcf0638729f7b0aefdc0d3` |
 | `diagnostics/glm53-full-20261009-night/stack/driver/stack-g2/glue-t0/result.json` | `bface79b2ebab751291281f47182ec7cefe8ea56d169d4a170734669c95d316d` |
 | `diagnostics/glm53-full-20261009-night/stack/driver/stack-g2/stack-boot-receipts.json` | `ccca25444276d4febc7b41e5c67d763a3615bd352363bee44f2dbda9f1173aab` |
 
-Reproduce the README tables and provenance offline:
+Reproduce the published tables and cell provenance offline, including the same-boot supplement:
 
 ```bash
 python3 scripts/release_table.py "$RUN/sparkdash.jsonl" --gate-run "$RUN" \
+  --needle-supplement "$RUN/../run-1010d-s250k" \
   --provenance "$RECEIPTS/provenance.md" > "$RECEIPTS/readme-tables.md"
 ```
 
 The formatter verifies every carried hash, phase identities, T0 report bindings and the fresh boot.
-The 250K cell records absence, rather than a measured score. Qeval x3 has no release-boot receipt;
+The supplemental 250K cell records a measured score on this release boot. Qeval x3 has no release-boot receipt;
 the carried single-run qeval diagnostics are labelled with their original decisions.
+
+## Same-boot S-class needle supplement and historical field survey
+
+Read-only measurements after the reduced gate use boot `glm53full-cand3win7-w4stack-12`, with APC on,
+from `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/`; `summary.json` reports **PASS**.
+The 16K control has 16,154 prompt tokens and the 250K run has 249,837 prompt tokens.
+Both repeats at both lengths score 8/10, miss `alias_result` and `matching_count`,
+have all seven registry fields correct and finish with `stop`.
+
+APC stayed on: repeat 2 at 16K (0.6 s TTFT) and 250K (1.2 s TTFT) is a prefix-cache-hit replay, not an independent prefill.
+
+Repeat-1 TTFT is 20.6 s at 16K and 383.3 s at 250K; repeat-2 TTFT is 0.6 s and 1.2 s.
+The release-gate 128K result remains one run, 9/10, missing only `matching_count`,
+with TTFT 170.9 s.
+
+The aggregate `matching_count` field has been missed in every surveyed needle run since 2026-10-05 (0/63 correct across 16K–250K; 0/67 including this supplement), a long-standing model/probe limitation rather than a regression of this release; `alias_result` is also missed at 16K and 250K on this boot, as at both lengths on d1 (det-align) and at 16K on g6.
+
+The copied survey list contains 63 distinct individual run receipts; the four new supplement
+receipts are absent from that list and are counted separately. Each tally below was recomputed
+from `grade.fields` and checked against actual/expected equality, with a SHA256 for every input
+in `needle-survey.json`. A miss means an incorrect field value, not an absent JSON key.
+
+| Survey target tokens | Runs | matching_count correct / missed | alias_result correct / missed |
+|---|---:|---:|---:|
+| 16384 | 22 | 0 / 22 | 16 / 6 |
+| 63488 | 12 | 0 / 12 | 11 / 1 |
+| 96128 | 10 | 0 / 10 | 10 / 0 |
+| 122880 | 4 | 0 / 4 | 2 / 2 |
+| 128000 | 9 | 0 / 9 | 8 / 1 |
+| 250000 | 6 | 0 / 6 | 0 / 6 |
+| survey | 63 | 0 / 63 | 47 / 16 |
+| supplementary | 4 | 0 / 4 | 0 / 4 |
+| combined | 67 | 0 / 67 | 47 / 20 |
+
+| Survey source / boot | Runs | matching_count correct / missed | alias_result correct / missed |
+|---|---:|---:|---:|
+| fp4x e | 4 | 0 / 4 | 4 / 0 |
+| fp4x f | 6 | 0 / 6 | 6 / 0 |
+| fp4x g | 6 | 0 / 6 | 6 / 0 |
+| fp4x h | 6 | 0 / 6 | 6 / 0 |
+| fp4x q | 6 | 0 / 6 | 6 / 0 |
+| boot2 | 6 | 0 / 6 | 3 / 3 |
+| long128k | 6 | 0 / 6 | 6 / 0 |
+| cand3win7 c | 6 | 0 / 6 | 3 / 3 |
+| cand3win7 d1 (det-align) | 6 | 0 / 6 | 2 / 4 |
+| eh_proj g6 | 4 | 0 / 4 | 1 / 3 |
+| this release (128K gate run) | 1 | 0 / 1 | 1 / 0 |
+| stopfix canonical c | 6 | 0 / 6 | 3 / 3 |
+
+Thus the aggregate `matching_count` miss spans every surveyed release boot and every tested
+length from 16K to 250K since 2026-10-05: a long-standing model/probe limitation,
+not a regression of this release. On d1 both 16K and both 250K runs miss `alias_result`;
+on g6 both 16K runs and one of two 128K runs miss it (g6 has no 250K receipt in this survey).
+
+Supplemental and survey provenance:
+
+| Receipt path | SHA256 |
+|---|---|
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/panel-16384.json` | `9834b95db7cb1fd083b753f08e2eae865d75ca47ac3539f354507cc3c85fde1e` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/panel-250000.json` | `eb186c9c635d32a5a50c965ebc88d708ee6d46d70fd7bac025d1b3644fcff437` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/prompt-16384.txt` | `607f0bbca86fbe5072d4c137673c7c9c2b44cc1719141219193f05514ab5e305` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/prompt-250000.txt` | `6a86133c10c55fc8ceb6445fd13e6770325a3acbd2e15ddfd994f088cb1e20c4` |
+| `diagnostics/glm53-full-20261009-night/relgate/run-1010d-s250k/self-check.json` | `20b1f6bcccd2f68b615a2f255720ac6c1e00c82bc1db8ea94bae3cb1c08b30e3` |
+| `diagnostics/glm53-full-20261009-night/pubrel/needle-followup-1010/needles.txt` | `2ff004421ed339203355d696282e637f30ab9ca1a8159116615e0a878d994e8c` |
+| `diagnostics/glm53-full-20261009-night/pubrel/needle-followup-1010/survey.py` | `fc9dcd6915efde4252a845e2aa13105ad873c996e6bbc1860d585a6a45655586` |
+| `diagnostics/glm53-full-20261009-night/pubrel/needle-followup-1010/needle-survey.json` | `ecffe037a72317e1daed7faa6e5f9ded0fbb6e9a2cb5fc168f8014b3f8473c1c` |
+| `diagnostics/glm53-full-20261009-night/pubrel/needle-followup-1010/needle-survey.md` | `0458e9bebb4ff0d3d060db3ba22d21f1aa1b30f2f67ddd028e1a4f3e76b06759` |
+
+Recompute the survey offline:
+
+```bash
+python3 "$RECEIPTS/needle-followup-1010/survey.py"
+```
+
+`RECEIPTS` is the local `diagnostics/glm53-full-20261009-night/pubrel/` directory.
+The copied `needles.txt` resolves relative to `diagnostics/`; no endpoint is contacted.

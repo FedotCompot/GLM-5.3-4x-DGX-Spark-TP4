@@ -2,12 +2,29 @@
 
 ## October 10 full-model candidate
 
-Scope: the tracked candidate tip based on dev release `36373c6`; private ancestor history is not rewritten.
-Only the tip tree is intended for public export. Preparation is offline and performs no push.
-`scripts/public_export_audit.py` reports zero unresolved findings. The broader location-only pattern
-review found no local home paths, tailnet references, tool/session names or key material. Private receipt
-roots were replaced with portable relative references; historical receipts are sanitized copies, not
-exact original identity evidence.
+Scope: one local follow-up commit on fetched public main `ef85a6e784f51a0356bb62b5abe6438dc7125f61`.
+The previously prepared non-fast-forward snapshot is excluded from this outgoing range. Only the requested
+export-audit, display-formatting and same-boot needle supplement deltas are carried from the dev tree;
+dev ancestry is not imported, merged or pushed. Public main's restored full RigMark section and
+sanitized receipt logs are retained. Preparation is local, apart from fetching public main, and performs no push.
+
+The extended detector rejects macOS temporary roots, temporary session directories, both home-directory
+roots, tailnet DNS names and every IPv4 address starting with 100, alongside existing endpoint, key and
+attribution patterns. Its own source and tracked filenames are scanned; escaped pattern spellings avoid
+a blanket file exemption. Regression fixtures independently reject each private path/address form and
+check that findings never print the matched bytes. Outgoing-history tests also catch a leak deleted in a
+later commit and attribution in commit metadata. Two remaining temporary sidecar references in historical
+notes use portable `temporary/` substitutions. Historical exported receipts are sanitized copies, not
+exact original identity evidence; original private receipts retain their bytes and numeric precision.
+
+Audit the tracked worktree and the exact outgoing commit range, including metadata and every full tree:
+
+```bash
+python3 scripts/public_export_audit.py --history origin/main..HEAD --out "$RECEIPTS/public-outgoing-audit.json"
+```
+
+Run this in the public clone; require exactly one outgoing commit whose parent equals fetched public
+main. Review the exact outgoing diff separately. These checks make no claim about private dev ancestors.
 
 Broad matches for generic experiment labels, coordination and ownership were reviewed: historical
 provenance and an external test CLI flag; benchmark scheduling roles and vLLM coordinator namespaces;
@@ -60,10 +77,26 @@ no public push is part of this finalization.
 
 ## October 10 reduced-gate result finalization
 
-All README result cells are generated offline by `scripts/release_table.py`. Fresh measurements and
-carried diagnostics are distinguished; missing 250K and fresh qeval x3 measurements are explicit.
+The 24 sparkDash cells and ten quality rows are reproducible offline by `scripts/release_table.py`,
+including `--needle-supplement` for same-boot S-class 16K x2 and 250K x2 receipts collected after the
+reduced gate. README and GATE-RESULT use the same generated quality table. Fresh gate phases,
+supplemental measurements and carried diagnostics are distinguished; fresh qeval x3 remains absent.
+Repeat-2 supplemental TTFT is a prefix-cache-hit replay, not an independent cold prefill. The restored
+full RigMark tables retain main's published precision; formatter output uses one decimal for TTFT and
+observed durations, two for GiB and decode rates, and whole tokens/s for prefill rates. Raw receipts and
+the machine-readable release summary preserve full precision.
 Receipt paths and SHA256s are in [the gate notes](release-1010-gate.md#recorded-reduced-gate-and-cell-provenance).
 The source manifest changes only the offline formatter hash; serving source and launch selectors are unchanged.
 
-`tests/run_cpu_tests.sh`: 533 cases, 513 passed, 20 skipped, exit 0. Release/recipe rerun: 120 passed, no skips or failures. Receipt integrity checks reject changed carried bytes, wrong phase identity, failed workload gates and wrong T0 report hashes.
-The tracked export audit has zero findings. This finalization is local and unpushed.
+The supplement formatter verifies same-boot identity, paired repeats, individual run bindings, registry
+correctness and completion before rendering. The matching-count survey remains 0/67, including the
+four supplemental runs; its receipt and interpretation are retained in the gate notes and release summary.
+Follow-up verification: release/recipe suites **123 passed**, export regressions **3 passed**;
+`tests/run_cpu_tests.sh` **521 cases: 501 passed, 20 skipped, exit 0**, no failures. All **69 receipt
+hashes** and **111 source-manifest entries** verified. Generated tables and provenance match the
+published documents; wrong-boot, missing-repeat, altered-run and registry-failure supplements are rejected.
+The tracked tree (**434 text files**) and exact outgoing additions have **zero audit findings**.
+The requested literal-pattern grep has **zero matches**, including synthetic test strings: those
+fixtures assemble private spellings only at runtime. All nine receipt files cleaned by public main's
+latest commit remain byte-for-byte unchanged. The one outgoing commit's metadata and full tree must
+also pass `--history origin/main..HEAD`; this follow-up remains local and unpushed.
