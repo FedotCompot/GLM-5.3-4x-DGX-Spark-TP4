@@ -4,9 +4,9 @@
 
 Decode tok/s, aggregate **[per stream]**, 256 output tokens, temperature 0.
 Report medians across every scored run: c1 five, c2/c4 three, c8 two; discard only named warmups.
-The retained cells belong to the exact October 10 release configuration and its gen-12 boot. That was one complete
-262,144-context sweep with no failed jobs and no best-of selection; see [the gate result](GATE-RESULT.md).
-For the next40 update, c1 is refreshed on the newly qualified candidate; the retained c2/c4/c8 cells remain
+The retained c2/c4/c8 and prefill measurements belong to the exact October 10 gen-12 release boot and its complete
+262,144-context sweep with no failed jobs or best-of selection; see [the gate result](GATE-RESULT.md).
+For the next40 update, prose c1 is refreshed on the newly qualified candidate; the retained c2/c4/c8 cells remain
 the historical October 10 release measurements. Their separate provenance is recorded with the release receipt.
 
 | Prompt type | c1 | c2 | c4 | c8* |
@@ -118,7 +118,7 @@ S-class supplement ran fresh 16K x2 and 250K x2 on the same release boot.
 | Prefix-cache first/repeat and retained-cache stress | 8K cold/replay prefill 905/16114 tok/s; stress APC hits/queries 64896/65024 tokens; retained-cache quiet minima 5.89/6.84/7.51/7.40 GiB (ranks 0/1/2/3). |
 | Mixed-load soak | PASS; requested 15 min, observed 1071.1 s; 27 requests, 0 errors, 0 preemptions; quiet drift -0.02/0.01/-0.02/0.02 GiB (ranks 0/1/2/3). |
 | Draft-head + eh_proj INIT | 4/4 ranks ON/ready, combined FP8 eh_proj qualified; 16 cases and 342/342/342/342 rows per rank; 0 failed; target head bit-exact on every rank. |
-| Temperature-0 sequential repeats on this boot | 30/30 prompts identical across 3 repeats; 30/30 native-ID equality to carried stack-g2/glue-t0. |
+| Temperature-0 sequential repeats on the next40 candidate | 30/30 prompts identical in each of 3 repeats (90/90 total); every repeat kept 30/30 native-ID equality to the frozen baseline. |
 | RigMark 1.0.0, thinking on, effort low | fresh c1: prose 30.40 tok/s, code 42.29 tok/s, structured 47.67 tok/s; retained release cells: code c4 aggregate 67.90 tok/s, 8K cold prefill 905 tok/s; all workload gates passed. |
 
 APC stayed on: repeat 2 at 16K (0.6 s TTFT) and 250K (1.2 s TTFT) is a prefix-cache-hit replay, not an independent prefill.
