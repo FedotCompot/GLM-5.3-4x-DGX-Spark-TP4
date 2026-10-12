@@ -339,6 +339,13 @@ OPTIONAL_KEYS = ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUA
 
 def optional_env():
     env = {k: ENV[k].strip() for k in OPTIONAL_KEYS if ENV.get(k, '').strip() not in ('', '0')}
+    sys.path.insert(0, str(ROOT / 'overlay/bringup'))
+    import glm_indexer_row_shard
+    row_options = glm_indexer_row_shard.options(ENV)
+    if row_options is not None:
+        row_mode, row_transport = row_options
+        env.update(GLM_INDEXER_ROW_SHARD='1', GLM_INDEXER_ROW_SHARD_INIT=row_mode,
+                   GLM_INDEXER_ROW_SHARD_TRANSPORT=row_transport)
     for key in ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE'):
         value = ENV.get(key, '0').strip() or '0'
         if value not in ('0', '1'):
@@ -386,7 +393,7 @@ def optional_env():
     hashing = env.get('GLM_PARAM_HASH', '0')
     if hashing not in ('0', '1'):
         raise ValueError('GLM_PARAM_HASH must be 0 or 1')
-    if (mode == 'ab' or hashing == '1' or recent_ab or draft_head != '0') != ('VLLM_SERVER_DEV_MODE' in env):
+    if (mode == 'ab' or hashing == '1' or recent_ab or draft_head != '0' or row_options is not None) != ('VLLM_SERVER_DEV_MODE' in env):
         raise ValueError('VLLM_SERVER_DEV_MODE=1 needs GLM_SKIP_MLA_PLAN=ab or GLM_PARAM_HASH=1 or recent KV AB or draft head')
     if 'GLM_SKIP_MLA_PLAN_AB_INIT' in env and mode != 'ab':
         raise ValueError('GLM_SKIP_MLA_PLAN_AB_INIT applies to GLM_SKIP_MLA_PLAN=ab only')

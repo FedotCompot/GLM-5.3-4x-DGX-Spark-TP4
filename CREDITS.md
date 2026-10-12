@@ -1,5 +1,12 @@
 # Credits
 
+- **vLLM #54951 and #54394 authors and contributors**: TP prefill indexer row ownership
+  and index exchange, Apache-2.0 ([#54951](https://github.com/vllm-project/vllm/pull/54951),
+  [#54394](https://github.com/vllm-project/vllm/pull/54394)). The local checked-only
+  implementation uses padded equal gathers and preserves FP4x's original query tiles.
+  No upstream code is copied. Local survey references supply the idea; upstream
+  author handles were not available in the offline packet.
+
 - **Allan Clark / ajclark**: coalesced original-checkpoint reader, two event-fenced pinned tiles,
   owning CUDA batches, producer queue and storage-lifetime budgets, ported from
   [GLM-5.3-DCP4-DFlash2-NVMe-KV-Offload-4x-DGX-Spark](https://github.com/ajclark/GLM-5.3-DCP4-DFlash2-NVMe-KV-Offload-4x-DGX-Spark/tree/f0b64af5ac6028624e5ae255d998faa1e0a9324a/runtime/nvme_loader).
