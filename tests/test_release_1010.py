@@ -78,7 +78,7 @@ print(json.dumps([mod['rank_env'](i) for i in range(4)]))
             'printf "%s %s %s %s %s" "$RECIPE_LIVE_FLOOR_GIB" "$RECIPE_STRESS_FLOOR_GIB" '
             '"$RECIPE_CAPTURE_HEADROOM_GIB" "$RECIPE_ADMISSION_FLOOR_GIB" "$GLM_PRECAPTURE_FLOOR_GIB"'],
             cwd=ROOT, env=env, text=True)
-        self.assertEqual(profile, '4.5 4.5 6.0 6.5 7.5')
+        self.assertEqual(profile, '3.5 4.5 6.0 6.5 7.5')
 
     @staticmethod
     def receipt():

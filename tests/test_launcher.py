@@ -298,7 +298,9 @@ class Launcher(unittest.TestCase):
             if change=='oom':s[2]['state']['OOMKilled']=True
             if change=='cuda':s[2]['logs']='CUDA error: illegal memory access'
             if change=='numeric':s[2]['logs']='worker output nan detected'
-            with self.subTest(change=change),self.assertRaises(RuntimeError):C.inspect_samples(s,{}, {})
+            with self.subTest(change=change),self.assertRaises(RuntimeError):
+                g={}
+                for _ in range(3):C.inspect_samples(s,{},g)
 
     def test_capture_floor(self):
         s = samples()
@@ -320,7 +322,9 @@ class Launcher(unittest.TestCase):
             q = samples(); q[1]['mem']['MemAvailable'] = int(6.05 * 1048576)
             self.assertEqual(len(C.inspect_samples(q, {}, {})), 4)
             q[1]['mem']['MemAvailable'] = int(5.95 * 1048576)
-            with self.assertRaisesRegex(RuntimeError, 'below 6 GiB'): C.inspect_samples(q, {}, {})
+            g = {}
+            C.inspect_samples(q, {}, g); C.inspect_samples(q, {}, g)
+            with self.assertRaisesRegex(RuntimeError, r'below 6 GiB for 3 samples \(5.95 GiB\)'): C.inspect_samples(q, {}, g)
             self.assertEqual(C.floor_gib('RECIPE_ADMISSION_FLOOR_GIB'), 6.5)
         for bad in ('2.0', '40', 'x'):
             with patch.dict(C.ENV, RECIPE_LIVE_FLOOR_GIB=bad), self.assertRaises(ValueError):
@@ -334,6 +338,12 @@ class Launcher(unittest.TestCase):
                     'RuntimeError: CUDA error: an illegal memory access', 'Traceback (most recent call last):',
                     'logits contain nan'):
             self.assertTrue(C.fatal_line(bad), bad)
+
+    def test_live_floor_needs_three_consecutive_samples(self):
+        g={};s=samples();low=samples();low[0]['mem']['MemAvailable']=int(5.9*1048576)
+        for q in (low,low,s,low,low,s):self.assertEqual(len(C.inspect_samples(q,{},g)),4)
+        C.inspect_samples(low,{},g);C.inspect_samples(low,{},g)
+        with self.assertRaisesRegex(RuntimeError,'rank 0 MemAvailable below 6 GiB for 3 samples'):C.inspect_samples(low,{},g)
 
     def test_swap_requires_three_samples_over_baseline(self):
         base={};growing={};s=samples();C.inspect_samples(s,base,growing)

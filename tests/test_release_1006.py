@@ -39,7 +39,7 @@ class Release(unittest.TestCase):
             self.assertEqual(len(vectors), 4)
             text = subprocess.check_output(['bash', str(root/'start.sh'), 'serve'], text=True,
                   env=dict(PATH=os.environ['PATH'], HOME=str(root), DRY='1'))
-            self.assertIn('# Memory floors (GiB MemAvailable per rank): live 4.5, capture headroom 6, admission 6.5 for 60 s, '
+            self.assertIn('# Memory floors (GiB MemAvailable per rank): live 3.5, capture headroom 6, admission 6.5 for 60 s, '
                           'in-process pre-capture 7.5', text.splitlines())
             for cmd in vectors:
                 env = dict(cmd[i+1].split('=', 1) for i,v in enumerate(cmd) if v == '-e')

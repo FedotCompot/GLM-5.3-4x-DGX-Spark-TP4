@@ -129,9 +129,11 @@ These are operational screens; multi-day stability remains unqualified.
 
 ## Memory safety
 
-On every rank, the floors are **4.5 GiB live and release stress**, **6.0 GiB capture**,
+On every rank, the floors are **3.5 GiB live**, **4.5 GiB release stress**, **6.0 GiB capture**,
 **6.5 GiB admission for 60 s**, and **7.5 GiB before capture**.
-**knapcio selected the 4.5 GiB stress criterion on October 10, 2026**, matching the live floor.
+**knapcio selected the 4.5 GiB stress criterion on October 10, 2026.** The live floor was lowered from 4.5 to 3.5 GiB
+on October 12, 2026 after long-context agent traffic settled rank 0 near 5.0 GiB and a single ~1 GiB prefill transient
+stopped a healthy server; the serving watch now stops only after three consecutive samples below the live floor.
 This changes only stress acceptance; capture, admission, swap and preemption checks remain in force.
 Stress must report the observed minimum on each rank, rather than substituting the threshold as a result.
 The watchdog applies the live floor, sustained swap/error guards, 600 s busy-without-progress allowance

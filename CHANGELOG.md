@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-12 — serving watch fix
+
+The serving watch no longer stops a healthy server on one low memory sample. With long-context agent traffic,
+rank 0 MemAvailable settled near 5.0 GiB once most of the KV pool had been used (host memory grows to the
+KV high-water mark, then stays flat), and one prefill transient of about 1 GiB (a single 10 s sample at 4.03 GiB)
+tripped the 4.5 GiB live floor and stopped all four ranks with requests in flight. The live floor is now 3.5 GiB
+(lowest measured harmless level 2.5 + 1.0), the watch stops only after three consecutive samples below it, and the
+stop message reports the measured value. The release stress criterion stays 4.5 GiB. No model, kernel or
+throughput change.
+
 ## 2026-10-10 — next40 decode update
 
 The public profile now carries the measured static next40 bundle: F3 with rank-consistent cold fallback,

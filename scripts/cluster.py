@@ -980,8 +980,12 @@ def inspect_samples(samples, swap_base, growing):
             failures.append(f'rank {rank} exited or was OOM killed'+(': '+summary if summary else ''))
             continue
         live = floor_gib('RECIPE_LIVE_FLOOR_GIB')
-        if mem['MemAvailable'] < live * 1048576:
-            raise RuntimeError(f'rank {rank} MemAvailable below {live:g} GiB')
+        # One sample under the floor is noise around a steady level; three in a row (as swap growth) stop.
+        low = ('low', rank)
+        growing[low] = growing.get(low, 0) + 1 if mem['MemAvailable'] < live * 1048576 else 0
+        if growing[low] >= 3:
+            raise RuntimeError(f'rank {rank} MemAvailable below {live:g} GiB for 3 samples '
+                               f'({mem["MemAvailable"] / 1048576:.2f} GiB)')
         used = mem['SwapTotal'] - mem['SwapFree']
         swap_base.setdefault(rank, used)
         growing[rank] = growing.get(rank, 0) + 1 if used - swap_base[rank] >= 64 * 1024 else 0
