@@ -150,6 +150,14 @@ This repository does not claim a blanket relicense of either project or of exter
 
 ## Experimental KV headroom planning
 
+Queue #39b stable prefill selection: **vLLM contributors**, Apache-2.0,
+`csrc/libtorch_stable/sampler.cu` and the image's DCP CuTe stable-key selector
+at `487ecf187`, provide the contracts and score/index radix-key idea;
+**NVIDIA CUB** provides the block radix sort and CUDA warp match intrinsics.
+The threshold-prefix selector, canonical output sort integration, CPU oracle,
+source-pinned hooks and event-only benchmark are original local work (knapcio).
+No upstream kernel implementation is copied.
+
 The conditional cache policy uses Linux kernel memory interfaces and the
 Tech2wild/tonyd2wild serving comparison as motivation. The memory-pool extension
 retains kindlingai's dispram integration and the existing FP4x implementation.

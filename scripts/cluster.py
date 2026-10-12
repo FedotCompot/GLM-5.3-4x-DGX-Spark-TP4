@@ -334,7 +334,7 @@ def remote(rank, command, timeout=45):
 OPTIONAL_KEYS = ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE',
                  'GLM_SKIP_MLA_PLAN', 'GLM_SKIP_MLA_PLAN_AB_INIT',
                  'GLM_SKIP_MLA_PLAN_KSTOP',
-                 'VLLM_SERVER_DEV_MODE', 'GLM_PARAM_HASH')
+                 'VLLM_SERVER_DEV_MODE', 'GLM_PARAM_HASH', 'GLM_INDEXER_STABLE_TOPK')
 
 
 def optional_env():
@@ -346,6 +346,8 @@ def optional_env():
         row_mode, row_transport = row_options
         env.update(GLM_INDEXER_ROW_SHARD='1', GLM_INDEXER_ROW_SHARD_INIT=row_mode,
                    GLM_INDEXER_ROW_SHARD_TRANSPORT=row_transport)
+    if ENV.get('GLM_INDEXER_STABLE_TOPK', '0') not in ('0', '1'):
+        raise ValueError('GLM_INDEXER_STABLE_TOPK must be 0 or 1')
     for key in ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE'):
         value = ENV.get(key, '0').strip() or '0'
         if value not in ('0', '1'):

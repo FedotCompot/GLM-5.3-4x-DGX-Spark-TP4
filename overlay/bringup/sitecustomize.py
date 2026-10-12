@@ -82,6 +82,9 @@ try:
             raise ValueError('GLM_GLUE_ROUTER_BF16, GLM_GLUE_MOE_WS and GLM_GLUE_DSA_IDX_CACHE must be 0 or 1')
         import glm_glue_lite
         glm_glue_lite.register()
+    if os.environ.get('GLM_INDEXER_STABLE_TOPK', '0') != '0':
+        import glm_indexer_stable_topk
+        glm_indexer_stable_topk.register()
     if os.environ.get('GLM_INDEXER_ROW_SHARD', '0') != '0':
         import glm_indexer_row_shard
         glm_indexer_row_shard.register()
