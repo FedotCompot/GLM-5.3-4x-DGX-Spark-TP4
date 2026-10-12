@@ -1,5 +1,6 @@
 """Mac CPU reference/contract tests. CUDA correctness is a separate kit."""
 import ast
+from contextlib import nullcontext
 import importlib.util
 import json
 import math
@@ -128,6 +129,7 @@ class Integration(unittest.TestCase):
 
     def test_stock_call_sites_resolve_ops_dynamically(self):
         image = Path(os.environ.get('GLM_IMAGE_SRC','/tmp/glm-adaptive-image'))
+        if image.name == 'vllm': image = image.parent
         source = (image/'vllm/model_executor/layers/sparse_attn_indexer.py').read_text()
         fn = next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='sparse_attn_indexer')
         calls = [n for n in ast.walk(fn) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='top_k_per_row_prefill']
@@ -155,6 +157,64 @@ class Integration(unittest.TestCase):
         imported = [n.name for x in ast.walk(tree) if isinstance(x,ast.Import) for n in x.names]
         self.assertFalse(any('profiler' in name for name in imported))
         self.assertIn('torch.cuda.Event(enable_timing=True)',source)
+
+
+class Binding(unittest.TestCase):
+    """Exercise the async ctypes boundary without loading a GPU library."""
+    def setUp(self):
+        self.device=types.SimpleNamespace(index=0)
+        self.torch=types.SimpleNamespace(float32='fp32',int32='i32',cuda=types.SimpleNamespace(
+            get_device_capability=lambda device:(12,1),
+            is_current_stream_capturing=lambda:False, device=lambda device:nullcontext(),
+            current_stream=lambda:types.SimpleNamespace(cuda_stream=987)))
+        class Tensor:
+            def __init__(inner,shape,dtype,strides,ptr):
+                inner.shape=shape;inner.dtype=dtype;inner.ndim=len(shape)
+                inner.device=self.device;inner.is_cuda=True;inner.strides=strides;inner.ptr=ptr
+            def stride(inner,dim=None): return inner.strides if dim is None else inner.strides[dim]
+            def numel(inner): return math.prod(inner.shape)
+            def is_contiguous(inner): return True
+            def data_ptr(inner): return inner.ptr
+        self.x=Tensor((8,35000),'fp32',(70000,2),101)
+        self.start=Tensor((8,),'i32',(1,),102)
+        self.end=Tensor((8,),'i32',(1,),103)
+        self.out=Tensor((8,2048),'i32',(2176,1),104)
+        self.args=[]
+        self.lib=types.SimpleNamespace(glm_stable_topk=lambda *a:self.args.append(a) or 0)
+
+    def invoke(self,rows=8,k=2048,strides=None):
+        return S.top_k_per_row_prefill(self.x,self.start,self.end,self.out,rows,*(strides or self.x.strides),k)
+
+    def test_device_stream_strides_and_pointer_binding(self):
+        with patch.dict(sys.modules,{'torch':self.torch}),patch.object(S,'_LIB',self.lib),patch.object(S,'load',return_value=self.lib):
+            self.invoke()
+        self.assertEqual(self.args,[(101,102,103,104,8,35000,70000,2,2176,1,0,987)])
+
+    def test_cpu_and_cross_device_refused(self):
+        with patch.dict(sys.modules,{'torch':self.torch}):
+            self.out.is_cuda=False
+            with self.assertRaises(RuntimeError): self.invoke()
+            self.out.is_cuda=True;self.out.device=object()
+            with self.assertRaises(RuntimeError): self.invoke()
+
+    def test_shape_dtype_topk_and_stride_refused(self):
+        with patch.dict(sys.modules,{'torch':self.torch}):
+            for call in (lambda:self.invoke(rows=9),lambda:self.invoke(k=1024),lambda:self.invoke(strides=(35000,1))):
+                with self.assertRaises(RuntimeError): call()
+            self.out.dtype='i64'
+            with self.assertRaises(RuntimeError): self.invoke()
+
+    def test_wrong_device_capability_refused(self):
+        self.torch.cuda.get_device_capability=lambda device:(9,0)
+        with patch.dict(sys.modules,{'torch':self.torch}),self.assertRaises(RuntimeError):self.invoke()
+
+    def test_capture_without_preloaded_library_refused(self):
+        self.torch.cuda.is_current_stream_capturing=lambda:True
+        with patch.dict(sys.modules,{'torch':self.torch}),patch.object(S,'_LIB',None),self.assertRaises(RuntimeError):self.invoke()
+
+    def test_launch_error_refused(self):
+        self.lib.glm_stable_topk=lambda *a:7
+        with patch.dict(sys.modules,{'torch':self.torch}),patch.object(S,'_LIB',self.lib),patch.object(S,'load',return_value=self.lib),self.assertRaises(RuntimeError):self.invoke()
 
 
 if __name__ == '__main__': unittest.main()
