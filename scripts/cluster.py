@@ -356,6 +356,11 @@ def optional_env():
             raise ValueError('canonical and deterministic MoE align are mutually exclusive')
         env['GLM_MOE_DET_ALIGN'] = '1'
     sys.path.insert(0, str(ROOT / 'overlay/bringup'))
+    l2hint = ENV.get('GLM_MARLIN_L2HINT_AB', '0') != '0'
+    if l2hint:
+        from glm_marlin_l2hint import options as l2hint_options
+        l2hint_options(ENV)
+        env.update(GLM_MARLIN_L2HINT_AB='1', VLLM_SERVER_DEV_MODE='1')
     from glm_draft_ehproj_config import options as ehproj_options
     from glm_mtp_rowselect_config import options as rowselect_options
     if rowselect_options(ENV):
@@ -386,7 +391,7 @@ def optional_env():
     hashing = env.get('GLM_PARAM_HASH', '0')
     if hashing not in ('0', '1'):
         raise ValueError('GLM_PARAM_HASH must be 0 or 1')
-    if (mode == 'ab' or hashing == '1' or recent_ab or draft_head != '0') != ('VLLM_SERVER_DEV_MODE' in env):
+    if (mode == 'ab' or hashing == '1' or recent_ab or draft_head != '0' or l2hint) != ('VLLM_SERVER_DEV_MODE' in env):
         raise ValueError('VLLM_SERVER_DEV_MODE=1 needs GLM_SKIP_MLA_PLAN=ab or GLM_PARAM_HASH=1 or recent KV AB or draft head')
     if 'GLM_SKIP_MLA_PLAN_AB_INIT' in env and mode != 'ab':
         raise ValueError('GLM_SKIP_MLA_PLAN_AB_INIT applies to GLM_SKIP_MLA_PLAN=ab only')
