@@ -8,13 +8,15 @@ from pathlib import Path
 import tempfile
 
 
-def write(path, chunk, sequence, decode_steps=None):
+def write(path, chunk, sequence, decode_steps=None, rearm=None):
     if type(chunk) is not int or chunk not in (0, 512, 1024, 2048, 4096):
         raise ValueError('chunk must be 0/512/1024/2048/4096')
     if type(sequence) is not int or sequence < 0:
         raise ValueError('sequence must be nonnegative')
     if decode_steps is not None and (type(decode_steps) is not int or decode_steps < 0):
         raise ValueError('decode_steps must be a nonnegative integer')
+    if rearm is not None and (rearm not in ('legacy', 'complete', 'scaled') or decode_steps is None):
+        raise ValueError('rearm requires schema 2 and legacy/complete/scaled')
     if path.exists():
         prior = json.loads(path.read_text())
         if sequence <= prior['sequence']:
@@ -22,6 +24,8 @@ def write(path, chunk, sequence, decode_steps=None):
     payload = dict(schema=1, chunk=chunk, sequence=sequence)
     if decode_steps is not None:
         payload.update(schema=2, decode_steps=decode_steps)
+    if rearm is not None:
+        payload.update(rearm=rearm)
     name = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix=path.name+'.', delete=False) as f:
@@ -39,8 +43,9 @@ def main():
     p.add_argument('path', type=Path); p.add_argument('--chunk', required=True, type=int)
     p.add_argument('--sequence', required=True, type=int)
     p.add_argument('--decode-steps', type=int, help='schema 2 pure-decode steps between mixed chunks')
+    p.add_argument('--rearm', choices=('legacy', 'complete', 'scaled'), help='optional schema 2 re-arm policy')
     a = p.parse_args()
-    print(json.dumps(write(a.path, a.chunk, a.sequence, a.decode_steps), sort_keys=True))
+    print(json.dumps(write(a.path, a.chunk, a.sequence, a.decode_steps, a.rearm), sort_keys=True))
 
 
 if __name__ == '__main__': main()

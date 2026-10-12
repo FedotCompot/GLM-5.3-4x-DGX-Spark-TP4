@@ -132,7 +132,11 @@ This repository does not claim a blanket relicense of either project or of exter
   (Agrawal et al., "Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve", OSDI 2024), which
   bounds prefill work per step so decodes keep progressing; no code from it is used. The aggregate prefill cap with
   decode reservations, the N pure-decode steps between chunks, the mixed-step cost model, the schema-2 runtime
-  sidecar and the CPU tests are local work (knapcio).
+  sidecar and the CPU tests are local work (knapcio). **qu0b / SGLang contributors**:
+  [SGLang #43844](https://github.com/sgl-project/sglang/pull/43844) identified the completed
+  cached/short-prefill re-arm delay and proposed chunk-only decode protection. The optional
+  `complete` policy follows that idea; `scaled` and this vLLM implementation are local work.
+  No SGLang source is copied.
 
 - **FP4x KV storage**: knapcio's original dc5ad9e E2M1/block-E4M3/power-of-two-row
   encoder, packed ABI, fused writer/readers and CPU tests. NVIDIA and Triton contributors:

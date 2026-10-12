@@ -173,6 +173,10 @@ class FairSchedule(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'drift'): A.transform(self.source + '\n', True)
 
     def test_priority_preemption_refunds_prefill_and_keeps_native_victim_rule(self):
+        for mode in F.REARM:
+            with self.subTest(rearm=mode): self.priority_preemption(mode)
+
+    def priority_preemption(self, mode):
         a, b, d = request('a', 100000, 4094), request('b', 100000, 4094), request('d', 100, 100, decode=True)
         # Force the native priority allocator to preempt an already scheduled
         # prefill, refund it, and retry the decoder. No policy-side refunds.
@@ -195,12 +199,13 @@ class FairSchedule(unittest.TestCase):
             return allocate(r, *args, **kwargs)
         s.kv_cache_manager.allocate_slots = alloc
         ns = dict(self.namespace, SchedulingPolicy=NS(PRIORITY='priority'),
-                  _glm_budget_factory=lambda s: F.FairStepBudget(s, A.THRESHOLD, 1024))
+                  _glm_budget_factory=lambda s: F.step_budget(s, A.THRESHOLD, 1024, 40, mode))
         exec('from __future__ import annotations\n' + A.transform(self.source, True), ns)
         out = ns['schedule'](s)
         self.assertEqual(out.num_scheduled_tokens, {'d': 3})
         self.assertEqual(attempts, ['d', 'd'])
         self.assertEqual(s.waiting[0].request_id, 'a')
+        self.assertEqual(s._glm_df_since_prefill, 40)
 
     def test_real_installer_runtime_on_off_on_with_running_requests(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -59,6 +59,24 @@ class Launcher(unittest.TestCase):
             with patch.dict(C.ENV, dict(profile, **values)), self.assertRaises(ValueError):
                 C.optional_env()
 
+    def test_decode_fair_rearm_env_is_opt_in_and_rank_uniform(self):
+        profile = {key: 'v-' + key for key in C.PROFILE_KEYS}
+        profile.update(GLM_MTP_KSTOP='0', GLM_KV_FORMAT='fp8', GLM_PAD_HYGIENE='0',
+                       GLM_FULL_MLA='triton', VLLM_USE_V2_MODEL_RUNNER='1', GLM_SPEC_SAMPLE='0',
+                       GLM_INDEXER_SHORTCUT='0', GLM_MTP_KSTOP_UNIFORM_BATCH='0',
+                       GLM_MTP_KSTOP_CAPTURE_LAYOUT='m12')
+        with patch.dict(C.ENV, profile):
+            C.ENV.pop('GLM_DECODE_FAIR_REARM', None)
+            self.assertNotIn('GLM_DECODE_FAIR_REARM', C.optional_env())
+            for mode in ('legacy', 'complete', 'scaled'):
+                with patch.dict(C.ENV, dict(GLM_DECODE_FAIR='1', GLM_DECODE_FAIR_REARM=mode,
+                                           GLM_KV_FORMAT='fp8', GLM_PREFILL_CHUNK_ADAPTIVE='1',
+                                           GLM_W2_PREFILL_CONTROL='/cache/prefill.json')):
+                    for rank in range(4):
+                        self.assertEqual(C.rank_env(rank)['GLM_DECODE_FAIR_REARM'], mode)
+            with patch.dict(C.ENV, dict(GLM_DECODE_FAIR_REARM='bad')), self.assertRaises(ValueError):
+                C.optional_env()
+
     def test_recent_kv_same_boot_switch_reaches_all_ranks(self):
         profile = {key: 'v-' + key for key in C.PROFILE_KEYS}
         profile.update(GLM_MTP_KSTOP='1', GLM_KV_FORMAT='fp4x', GLM_PAD_HYGIENE='0',

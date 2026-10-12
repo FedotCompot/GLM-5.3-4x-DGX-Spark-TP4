@@ -27,7 +27,7 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
                     'GLM_FP4_RECENT_WINDOW', 'GLM_FP4_RECENT_AB', 'GLM_LOADER', 'GLM_KV_FORMAT',
                     'GLM_MTP_ROWSELECT', 'GLM_DRAFT_EHPROJ', 'GLM_DRAFT_EHPROJ_INIT',
                     'GLM_DRAFT_HEAD', 'GLM_DRAFT_HEAD_INIT', 'GLM_DECODE_FAIR',
-                    'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL',
+                    'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL', 'GLM_DECODE_FAIR_REARM',
                     'GLM_MOE_DET_ALIGN')]
 GiB = 1 << 30
 HEALTH_POLL_S = 1          # loopback /health while booting
@@ -402,7 +402,7 @@ def optional_env():
     if int(adaptive.get('GLM_PREFILL_CHUNK_THRESHOLD', '16384')) <= 0:
         raise ValueError('GLM_PREFILL_CHUNK_THRESHOLD must be positive')
     env.update(adaptive)
-    fair = {k: ENV[k] for k in ('GLM_DECODE_FAIR', 'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL') if k in ENV}
+    fair = {k: ENV[k] for k in ('GLM_DECODE_FAIR', 'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL', 'GLM_DECODE_FAIR_REARM') if k in ENV}
     sys.path.insert(0, str(ROOT / 'overlay' / 'bringup'))
     import glm_decode_fair
     glm_decode_fair.settings(dict(ENV, **env, **fair))
