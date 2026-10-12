@@ -28,7 +28,9 @@ The image's `_custom_ops.py`, sparse indexer and worker are hash-pinned.
 - The final candidate bucket is appended through `smemFinalDstIdx` atomicAdd
   (:282). Its insertion sort (:503-525) breaks equal scores using staging
   positions `i < j`, **not key indices**. The CUB alternative sorts score-only
-  keys, so any staging-order stability also cannot restore index order.
+  keys, so any staging-order stability also cannot restore index order. If
+  the remaining quota cuts through such a tied group, the final-sort/truncation
+  path can change the tied selected set even when the bucket fits in 2048.
 - When the cutoff score bucket exceeds 2048 entries, refinement reaches the
   last score bits, then atomicAdd on `histo.data[binIdx]` (:295) accepts only
   destinations `<topK`. Exactly equal score keys race for the remaining
@@ -67,8 +69,10 @@ However `_radix_pass` appends selected keys using atomicAdd on
 packed DCP candidates, assumes a multiple of 512, uses float token IDs, and
 the stable key distinguishes signed zeros. Packing all context keys would
 double logits storage and stress register use. It cannot recover locally
-discarded ties. The third-party Triton top-k is a tiled sort designed for
-different shapes, not a ready bounded-scratch full-row DSA selector.
+discarded ties. The third-party Triton `streaming_topk` also includes an
+index tiebreak, but its public wrapper requires columns <32768, uses int16
+indices and `BLOCK_N=32`; it is an expert-routing interface and cannot directly
+cover K=2048 at 35K/129K. Extending it would require a new kernel qualification.
 
 The new original CUDA kernel uses the same key idea with int32 indices:
 `(ordered FP32 score <<32) | (UINT32_MAX - relative_index)`. Every valid key
