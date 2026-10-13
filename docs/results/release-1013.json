@@ -1,0 +1,426 @@
+{
+ "date": "2026-10-13",
+ "tool": "bench/sparkdash.py full 262144 (thinking off, 256 tokens, temperature 0)",
+ "public_main": {
+  "commit": "3ce1101",
+  "decode": [
+   {
+    "kind": "prose",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 39.58,
+    "median_per_stream_decode_tps": 39.58
+   },
+   {
+    "kind": "prose",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 50.75,
+    "median_per_stream_decode_tps": 25.9
+   },
+   {
+    "kind": "prose",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 65.84,
+    "median_per_stream_decode_tps": 17.03
+   },
+   {
+    "kind": "prose",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 61.93,
+    "median_per_stream_decode_tps": 18.1
+   },
+   {
+    "kind": "prose",
+    "concurrency": 3,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 57.25,
+    "median_per_stream_decode_tps": 19.5
+   },
+   {
+    "kind": "code",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 45.16,
+    "median_per_stream_decode_tps": 45.16
+   },
+   {
+    "kind": "code",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 53.65,
+    "median_per_stream_decode_tps": 26.83
+   },
+   {
+    "kind": "code",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 72.29,
+    "median_per_stream_decode_tps": 18.22
+   },
+   {
+    "kind": "code",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 62.545,
+    "median_per_stream_decode_tps": 19.095
+   },
+   {
+    "kind": "structured",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 48.24,
+    "median_per_stream_decode_tps": 48.24
+   },
+   {
+    "kind": "structured",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 59.01,
+    "median_per_stream_decode_tps": 30.43
+   },
+   {
+    "kind": "structured",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 92.8,
+    "median_per_stream_decode_tps": 24.33
+   },
+   {
+    "kind": "structured",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 79.655,
+    "median_per_stream_decode_tps": 24.69
+   },
+   {
+    "kind": "json",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 45.66,
+    "median_per_stream_decode_tps": 45.66
+   },
+   {
+    "kind": "json",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 55.07,
+    "median_per_stream_decode_tps": 28.38
+   },
+   {
+    "kind": "json",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 79.85,
+    "median_per_stream_decode_tps": 20.45
+   },
+   {
+    "kind": "json",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 70.35,
+    "median_per_stream_decode_tps": 21.29
+   }
+  ],
+  "prefill_sweep": [
+   {
+    "cell": "4k",
+    "target_tokens": 4096,
+    "n": 3,
+    "median_prefill_tps": 979.47,
+    "runs": [
+     988.21,
+     979.47,
+     839.08
+    ]
+   },
+   {
+    "cell": "8k",
+    "target_tokens": 8192,
+    "n": 3,
+    "median_prefill_tps": 901.81,
+    "runs": [
+     876.78,
+     901.81,
+     935.13
+    ]
+   },
+   {
+    "cell": "16k",
+    "target_tokens": 16384,
+    "n": 3,
+    "median_prefill_tps": 890.77,
+    "runs": [
+     890.77,
+     895.42,
+     885.92
+    ]
+   },
+   {
+    "cell": "32k",
+    "target_tokens": 32768,
+    "n": 3,
+    "median_prefill_tps": 882.76,
+    "runs": [
+     889.95,
+     882.76,
+     866.19
+    ]
+   }
+  ]
+ },
+ "release": {
+  "commit": "99f23b2 (public main + GLM_MARLIN_L2HINT=on)",
+  "decode": [
+   {
+    "kind": "prose",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 39.89,
+    "median_per_stream_decode_tps": 39.89
+   },
+   {
+    "kind": "prose",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 51.31,
+    "median_per_stream_decode_tps": 26.17
+   },
+   {
+    "kind": "prose",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 66.87,
+    "median_per_stream_decode_tps": 17.29
+   },
+   {
+    "kind": "prose",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 62.86,
+    "median_per_stream_decode_tps": 18.509999999999998
+   },
+   {
+    "kind": "prose",
+    "concurrency": 3,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 57.32,
+    "median_per_stream_decode_tps": 19.53
+   },
+   {
+    "kind": "code",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 46.47,
+    "median_per_stream_decode_tps": 46.47
+   },
+   {
+    "kind": "code",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 55.1,
+    "median_per_stream_decode_tps": 27.55
+   },
+   {
+    "kind": "code",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 73.19,
+    "median_per_stream_decode_tps": 18.45
+   },
+   {
+    "kind": "code",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 63.63,
+    "median_per_stream_decode_tps": 19.525
+   },
+   {
+    "kind": "structured",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 49.51,
+    "median_per_stream_decode_tps": 49.51
+   },
+   {
+    "kind": "structured",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 59.65,
+    "median_per_stream_decode_tps": 30.76
+   },
+   {
+    "kind": "structured",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 88.89,
+    "median_per_stream_decode_tps": 24.54
+   },
+   {
+    "kind": "structured",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 79.555,
+    "median_per_stream_decode_tps": 24.765
+   },
+   {
+    "kind": "json",
+    "concurrency": 1,
+    "n": 5,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 46.21,
+    "median_per_stream_decode_tps": 46.21
+   },
+   {
+    "kind": "json",
+    "concurrency": 2,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 55.82,
+    "median_per_stream_decode_tps": 28.71
+   },
+   {
+    "kind": "json",
+    "concurrency": 4,
+    "n": 3,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 80.06,
+    "median_per_stream_decode_tps": 20.51
+   },
+   {
+    "kind": "json",
+    "concurrency": 8,
+    "n": 2,
+    "runs_failed": 0,
+    "median_aggregate_decode_tps": 71.64500000000001,
+    "median_per_stream_decode_tps": 21.619999999999997
+   }
+  ],
+  "prefill_sweep": [
+   {
+    "cell": "4k",
+    "target_tokens": 4096,
+    "n": 3,
+    "median_prefill_tps": 868.72,
+    "runs": [
+     867.02,
+     868.72,
+     984.01
+    ]
+   },
+   {
+    "cell": "8k",
+    "target_tokens": 8192,
+    "n": 3,
+    "median_prefill_tps": 934.19,
+    "runs": [
+     939.16,
+     934.19,
+     884.76
+    ]
+   },
+   {
+    "cell": "16k",
+    "target_tokens": 16384,
+    "n": 3,
+    "median_prefill_tps": 871.73,
+    "runs": [
+     858.85,
+     895.01,
+     871.73
+    ]
+   },
+   {
+    "cell": "32k",
+    "target_tokens": 32768,
+    "n": 3,
+    "median_prefill_tps": 885.64,
+    "runs": [
+     885.64,
+     885.1,
+     885.84
+    ]
+   }
+  ],
+  "prefill_rerun_same_boot": {
+   "note": "README rule: the 4K cell came in below the previous release; rerun of the prefill cells (one warm-up, three rounds) on the same boot",
+   "cells": {
+    "4096": {
+     "median_prefill_tps": 988.2,
+     "runs": [
+      984.6,
+      988.2,
+      988.6
+     ]
+    },
+    "8192": {
+     "median_prefill_tps": 938.5,
+     "runs": [
+      938.5,
+      928.8,
+      938.6
+     ]
+    },
+    "16384": {
+     "median_prefill_tps": 892.0,
+     "runs": [
+      889.2,
+      892.0,
+      897.7
+     ]
+    },
+    "32768": {
+     "median_prefill_tps": 884.1,
+     "runs": [
+      883.9,
+      885.6,
+      884.1
+     ]
+    }
+   }
+  },
+  "prose_c1_extra": {
+   "runs": 15,
+   "median": 39.86,
+   "min": 39.35,
+   "max": 40.07,
+   "tokens_per_cycle": 2.909
+  }
+ },
+ "quality": {
+  "t0": "30/30 identical in 3 sequential repeats",
+  "teacher_prompt_logprobs": "prose/code/structured/json/math/polish bit-identical to public main; long 8K/24K differ only within the stock prefill top-k tie nondeterminism that public main also shows"
+ }
+}

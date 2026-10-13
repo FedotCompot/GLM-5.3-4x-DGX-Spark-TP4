@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-13 — Marlin MoE L2 hints
+
+The target Marlin MoE expert-weight stream now loads with an `evict_first` L2 policy (`GLM_MARLIN_L2HINT=on`,
+default; one-time `./start.sh l2hint-setup` build). Same-day sparkDash against public main: prose c1 39.58 → 39.89,
+code c1 45.16 → 46.47, structured c1 48.24 → 49.51, json c1 45.66 → 46.21, every c2/c4/c8 per-stream cell up
+0.2–2.3 %; 15 extra prose c1 runs median 39.86. The previous README c2–c8 cells came from the October 10 release
+boot; same-day public main measures below some of them (structured c2 aggregate 59.0 vs 67.0), so compare cells
+only within one day's sweep. Outputs unchanged: teacher-forced prompt logprobs bit-identical on
+the short panel, temperature-0 30/30 in three repeats. Idea credit: sudoingX/dgx-spark-deepseek-v41 (no code copied).
+
+Also in this update, opt-in and default off: stable prefill top-k with a FAST TP row-sharded prefill indexer
+(`GLM_INDEXER_STABLE_TOPK=1`, `GLM_INDEXER_ROW_SHARD=1`; deterministic long prefill, the selected set is emitted in
+ascending index order so prompts up to 2048 keys keep stock outputs; net cold prefill vs stock -3 % at 128K but
++10 % at 32K, so it stays off), and decode-fair re-arm `GLM_DECODE_FAIR_REARM=complete` (queued short requests
+start ~3 s sooner, running streams lose 5–9 % at sparkDash c4/c8, so it stays off). `dispram_recipe` passes
+`DISPRAM_HOME` to every remote `dispram.sh` call. `release_probe` takes the sparkDash Spark id from the URL.
+
 ## 2026-10-12 — serving watch fix
 
 The serving watch no longer stops a healthy server on one low memory sample. With long-context agent traffic,

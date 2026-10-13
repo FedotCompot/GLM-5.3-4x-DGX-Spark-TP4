@@ -4,32 +4,32 @@
 
 Decode tok/s, aggregate **[per stream]**, 256 output tokens, temperature 0.
 Report medians across every scored run: c1 five, c2/c4 three, c8 two; discard only named warmups.
-The retained c2/c4/c8 and prefill measurements belong to the exact October 10 gen-12 release boot and its complete
-262,144-context sweep with no failed jobs or best-of selection; see [the gate result](GATE-RESULT.md).
-For the next40 update, prose c1 is refreshed on the newly qualified candidate; the retained c2/c4/c8 cells remain
-the historical October 10 release measurements. Their separate provenance is recorded with the release receipt.
+Every cell below comes from one complete 262,144-context sweep of the October 13 release boot (no failed jobs,
+no best-of selection). The same tool on the same day measured public main without the L2 hints; that sweep and
+15 extra prose c1 runs (median 39.86, range 39.35–40.07) are in [the release result](docs/results/release-1013.json).
 
 | Prompt type | c1 | c2 | c4 | c8* |
 |---|---:|---:|---:|---:|
-| prose | **39.64** | 50.90 [25.97] | 65.89 [17.05] | 61.31 [18.09] |
-| code | 45.74 | 54.39 [27.19] | 72.94 [18.38] | 62.78 [19.26] |
-| structured | 48.66 | 67.04 [33.52] | 92.22 [24.20] | 72.64 [24.32] |
-| json | 45.54 | 55.26 [28.40] | 78.98 [20.22] | 70.69 [21.34] |
+| prose | **39.89** | 51.31 [26.17] | 66.87 [17.29] | 62.86 [18.51] |
+| code | 46.47 | 55.10 [27.55] | 73.19 [18.45] | 63.63 [19.52] |
+| structured | 49.51 | 59.65 [30.76] | 88.89 [24.54] | 79.56 [24.77] |
+| json | 46.21 | 55.82 [28.71] | 80.06 [20.51] | 71.65 [21.62] |
 
 *Four serving slots: c8 queues four requests. Per-stream decode covers active generation;
 aggregate includes batch wall time. sparkDash repeats one prompt across streams; memory stress uses distinct prompts.
 
-Cold prefill, median of three, with prefix-cache state recorded separately:
+Cold prefill, median of three on the same boot (the sweep's first 4K round ran low, so the prefill cells were rerun
+once as the table rule requires; both are recorded):
 
 | Input | 4K | 8K | 16K | 32K |
 |---|---:|---:|---:|---:|
-| cold prefill tok/s | 977 | 882 | 862 | 881 |
-| time to first token (s) | 4.2 | 9.3 | 19.0 | 37.2 |
+| cold prefill tok/s | 988 | 939 | 892 | 884 |
+| time to first token (s) | 4.1 | 8.7 | 18.4 | 37.1 |
 
 ## RigMark 1.0.0 (thinking on, effort low)
 
-The c1 decode cells below are medians of five from the qualified next40 candidate; all workload gates passed.
-The concurrency and prefill tables remain the historical October 10 release measurements.
+RigMark was not rerun for the October 13 update. The c1 decode cells below are medians of five from the qualified
+next40 candidate; all workload gates passed. The concurrency and prefill tables are the October 10 release measurements.
 
 | Workload | c1 decode tok/s | Observed range |
 |---|---:|---:|
@@ -65,6 +65,11 @@ Native confidence stopping retains K3 at c1 and K2 in multi-request batches. Dec
 4096/N40. The greedy maximum/confidence operation, K-stop guard packet/verdict, and unused MLA planning are fused
 or skipped on their qualified static paths. Row selection, cache trim and async v2 remain absent from this export.
 Split32 MLA and the existing rotary storage retain the public release layout.
+**Marlin MoE L2 hints** are on (October 13): the target MoE expert-weight stream loads with an `evict_first` L2 policy,
+so the expert weights read once per step stop displacing the small reused tensors. Model outputs are unchanged
+(bit-identical teacher-forced prompt logprobs on the short panel, temperature-0 30/30); every per-stream sparkDash
+cell rose 0.2–2.9 % against public main on the same day (aggregate structured c4 was 4 % lower, batch-wall noise). It needs a one-time local build: `./start.sh l2hint-setup`
+(pinned image, no GPU or network; `GLM_MARLIN_L2HINT=off` skips it). [L2 hint details](docs/marlin-l2hint-serving.md).
 The base configuration passed the owner-approved reduced release gate on October 10, 2026. The added next40
 paths retained exact temperature-0 output across three 30-row runs, passed fresh sparkDash and RigMark c1
 qualification, and preserved the base release's context and memory layout. The base gate scope and carried
@@ -157,6 +162,7 @@ with idle reset, and an 1800 s boot deadline. APC stays on. [Memory layout](docs
 | FP8 draft eh_proj | Replicated draft-only projection; combined INIT qualification | `GLM_DRAFT_EHPROJ=fp8`, `GLM_DRAFT_EHPROJ_INIT=1` | knapcio; vLLM FP8 Marlin contributors; NVIDIA FP8; PyTorch |
 | Glue-lite F1+F2+F3 | Remove router cast and repeated MoE workspace reset; reuse the pinned shared DSA index buffer | `GLM_GLUE_ROUTER_BF16=1`, `GLM_GLUE_MOE_WS=1`, `GLM_GLUE_DSA_IDX_CACHE=1` | knapcio; vLLM grouped-topk, Marlin and sparse-MLA contributors |
 | Decode launch reductions | Share greedy maximum, fuse guard packet/verdict, skip unused generic and K-stop MLA plans | `GLM_GREEDY_SAMPLE_FUSE=1`, `GLM_KSTOP_GUARD_FUSE=1`, `GLM_SKIP_MLA_PLAN=1`, `GLM_SKIP_MLA_PLAN_KSTOP=1` | knapcio; PyTorch, Triton, vLLM and FlashInfer contributors |
+| Marlin MoE L2 hints | `evict_first` L2 policy on the target MoE expert-weight stream (single fixed bank); bit-identical outputs | `GLM_MARLIN_L2HINT=on`, one-time `./start.sh l2hint-setup` | sudoingX ([dgx-spark-deepseek-v41](https://github.com/sudoingX/dgx-spark-deepseek-v41)) evict-first weight-stream idea, no code copied; IST-DASLab / Neural Magic / vLLM Marlin MoE (Apache-2.0); NVIDIA PTX cache policies; knapcio |
 | Sparse MLA and dirty L2 | GB10-compatible split32 MLA; discard consumed partials | `GLM_FULL_MLA=triton`, `GLM_DIRTY_L2=discard` | CosmicRaisins; Matt Mastracci ideas; NVIDIA PTX; Triton |
 | Switched RoCE | RDMA TP collectives on both rails | `GLM_ROCE_ALLREDUCE=1` | b12x/RoCEnante; Luke Alonso; Jason Cook; tonyd2wild; rhys101 |
 | Fast loading and shard selection | Bounded copies; MTP reads its five shards | `GLM_FAST_LOAD=1`, `GLM_MTP_ONLY_LOAD=1` | Willian-Zhang; vLLM; knapcio |
@@ -179,6 +185,7 @@ Fill the four hosts, fabric addresses, image IDs, paths and NCCL hashes before l
 ```bash
 cp .env.example .env
 bash overlay/guard/build_guard.sh
+./start.sh l2hint-setup          # once: builds the L2-hinted Marlin MoE variant (or set GLM_MARLIN_L2HINT=off)
 DRY=1 ./start.sh serve
 ./start.sh preflight
 ./start.sh serve

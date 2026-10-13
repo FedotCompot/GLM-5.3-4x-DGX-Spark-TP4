@@ -1,7 +1,11 @@
-# Queue 36 stage B: in-model Marlin weight eviction hints
+# Marlin MoE weight eviction hints
 
-Default OFF: `GLM_MARLIN_L2HINT=on` installs the fixed hint dispatcher in
-ordinary serving. `off` (or unset) installs no hooks. The single-bank mode
+Release default since 2026-10-13: `GLM_MARLIN_L2HINT=on` installs the fixed hint dispatcher in
+ordinary serving. Build the variant once per clone with `./start.sh l2hint-setup` (runs
+`scripts/build_marlin_l2hint.sh` in the pinned image, installs `overlay/l2hint-serving/`, keeps any previous build
+under `logs/`); `serve` refuses to start with the hints on and no build present. Measured on the release boot:
+every per-stream sparkDash cell 0.2–2.9 % above public main on the same day, teacher-forced prompt logprobs bit-identical
+on the short panel, temperature-0 30/30 ([result](results/release-1013.json)). `off` (or unset) installs no hooks. The single-bank mode
 patches only the Marlin wrapper: stock graph capture, memory profiling and
 replay are unchanged; no second bank, worker RPC or EngineCore RPC is installed.
 It requires V2 and deterministic alignment, and does not enable dev mode.
