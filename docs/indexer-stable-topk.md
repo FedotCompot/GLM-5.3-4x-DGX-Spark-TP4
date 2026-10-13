@@ -2,8 +2,10 @@
 
 Experimental, default OFF: unset or `GLM_INDEXER_STABLE_TOPK=0` installs no
 hook and adds no serving Docker argument. `=1` selects the first 2048 keys of
-a stable sort by `(score descending, relative index ascending)`. Output is
-also in that canonical order, with `-1` padding. No score perturbation, new
+a stable sort by `(score descending, relative index ascending)`. The selected set is
+emitted in ascending index order with `-1` padding (2026-10-13: identical to the stock selector's <=K shortcut,
+so prompts up to 2048 keys keep stock attention order and outputs; the earlier score-ordered output changed
+short-prompt text and cost prose MTP acceptance). No score perturbation, new
 quantization, scorer change or decode selector change. The separate row-shard
 FAST experiment requires this selector; see `indexer-row-shard.md`.
 Only the pinned full GLM TP4/PCP1/DCP1, GB10 sm_121, FP32-logits/int32-index ABI

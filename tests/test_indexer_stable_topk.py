@@ -30,7 +30,7 @@ class StableReference(unittest.TestCase):
         row = [1.] * 35000
         for i in range(30000, 30500): row[i] = 2.
         self.check(row)
-        self.assertEqual(S.reference(row, 0, len(row)), list(range(30000,30500)) + list(range(1548)))
+        self.assertEqual(S.reference(row, 0, len(row)), list(range(1548)) + list(range(30000,30500)))
 
     def test_long_equal_contexts(self):
         for n in (8192, 35000, 129000):
@@ -71,7 +71,7 @@ class StableReference(unittest.TestCase):
         self.assertEqual(S.reference([9.] * 50, 3, 3), [-1] * 2048)
 
     def test_short_padding(self):
-        self.assertEqual(S.reference([3., 8., 8.], 0, 3, 5), [1,2,0,-1,-1])
+        self.assertEqual(S.reference([3., 8., 8.], 0, 3, 5), [0,1,2,-1,-1])  # set by score, emitted by index
         self.check([3., 8., 8.], k=5)
 
     def test_bad_bounds(self):

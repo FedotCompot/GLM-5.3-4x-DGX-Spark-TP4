@@ -55,7 +55,7 @@ def reference(row, start, end, k=2048):
     order = sorted(range(len(values)),
                    key=lambda i: (not math.isnan(values[i]),
                                   0 if math.isnan(values[i]) else -values[i]))
-    return order[:k] + [-1] * max(0, k - len(order))
+    return sorted(order[:k]) + [-1] * max(0, k - len(order))   # emitted in ascending index order
 
 
 def radix_reference(row, start, end, k=2048):
@@ -82,7 +82,7 @@ def radix_reference(row, start, end, k=2048):
                 break
     selected = sorted((key for key in keys if len(keys) <= k or key >= prefix), reverse=True)
     assert len(selected) == min(k, len(keys))
-    return [0xffffffff - (key & 0xffffffff) for key in selected] + [-1] * max(0, k - len(keys))
+    return sorted(0xffffffff - (key & 0xffffffff) for key in selected) + [-1] * max(0, k - len(keys))
 
 
 def build():
@@ -175,7 +175,7 @@ def install_sparse(mod):
 
 def status():
     return dict(armed=REGISTERED, installed=INSTALLED, calls=CALLS,
-                order='score_desc_index_asc', prefill_only=True)
+                order='set_score_desc_index_asc_emit_index_asc', prefill_only=True)
 
 
 def install_worker(mod):

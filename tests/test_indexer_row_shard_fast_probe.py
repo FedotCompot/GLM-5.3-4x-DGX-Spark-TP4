@@ -27,7 +27,7 @@ class Fake:
         raise AssertionError(path)
     def rpc(self,method,args=()):
         if method == 'indexer_stable_topk_status':
-            return [dict(rank=i,armed=True,installed=True,order='score_desc_index_asc') for i in range(4)]
+            return [dict(rank=i,armed=True,installed=True,order='set_score_desc_index_asc_emit_index_asc') for i in range(4)]
         if method == 'indexer_row_shard_status': return copy.deepcopy(self.state)
         raise AssertionError(method)
     def pause(self): self.paused=True

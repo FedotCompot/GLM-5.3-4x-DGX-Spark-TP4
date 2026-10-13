@@ -84,15 +84,20 @@ __global__ void select(const float* logits, const int* starts, const int* ends,
   }
   __syncthreads();
   assert(count == (n < K ? n : K));
+  // Emit the selected set in ascending index order: identical to the stock selector's <=K shortcut (so short
+  // prompts keep stock attention order) and canonical for longer rows. Valid keys are >= 2^32; 0 = empty slot.
   uint64_t keys[ITEMS];
   #pragma unroll
-  for (int j = 0; j < ITEMS; ++j) keys[j] = selected[t * ITEMS + j];
+  for (int j = 0; j < ITEMS; ++j) {
+    const uint64_t v = selected[t * ITEMS + j];
+    keys[j] = v ? uint64_t(~uint32_t(v)) : ~uint64_t(0);
+  }
   __syncthreads();
-  Sort(scratch.sort).SortDescendingBlockedToStriped(keys);
+  Sort(scratch.sort).SortBlockedToStriped(keys);
   #pragma unroll
   for (int j = 0; j < ITEMS; ++j) {
     const int pos = j * THREADS + t;
-    out[int64_t(pos) * o1] = pos < count ? int(~uint32_t(keys[j])) : -1;
+    out[int64_t(pos) * o1] = pos < count ? int(keys[j]) : -1;
   }
 }
 }  // namespace glm_stable

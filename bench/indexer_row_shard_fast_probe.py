@@ -173,7 +173,7 @@ def run(client, panels, save, sample_every=32):
         model = client.request('/v1/models')['data'][0]['id']
         stable = client.rpc('indexer_stable_topk_status')
         if (len(stable) != 4 or sorted(r['rank'] for r in stable) != list(range(4)) or
-                any(not r['armed'] or not r['installed'] or r['order'] != 'score_desc_index_asc' for r in stable)):
+                any(not r['armed'] or not r['installed'] or r['order'] != 'set_score_desc_index_asc_emit_index_asc' for r in stable)):
             raise RuntimeError('stable selector not installed on all four ranks')
         workers(client.rpc('indexer_row_shard_status'), 'off')
         for panel in panels:
