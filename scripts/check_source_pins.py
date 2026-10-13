@@ -18,7 +18,8 @@ def check_pins(root, pin_file):
 
 def check(root):
     overlay = Path(__file__).resolve().parents[1] / 'overlay'
-    for pin_file in (overlay / 'source_pins.json', overlay / 'kstop/compat_source_pins.json'):
+    for pin_file in (overlay / 'source_pins.json', overlay / 'kstop/compat_source_pins.json',
+                     overlay / 'bringup/stable_topk/source_pins.json'):
         check_pins(root, pin_file)
 
 

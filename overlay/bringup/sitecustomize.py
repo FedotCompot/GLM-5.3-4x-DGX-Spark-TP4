@@ -75,6 +75,10 @@ try:
     if os.environ.get('GLM_MOE_DET_ALIGN', '0') != '0':
         import glm_moe_det
         glm_moe_det.register()
+    if (os.environ.get('GLM_MARLIN_L2HINT_AB', '0') != '0'
+            or os.environ.get('GLM_MARLIN_L2HINT', 'off') != 'off'):
+        import glm_marlin_l2hint
+        glm_marlin_l2hint.register()
     glue = [k for k in ('GLM_GLUE_ROUTER_BF16', 'GLM_GLUE_MOE_WS', 'GLM_GLUE_DSA_IDX_CACHE')
             if os.environ.get(k, '0') != '0']
     if glue:
@@ -82,6 +86,12 @@ try:
             raise ValueError('GLM_GLUE_ROUTER_BF16, GLM_GLUE_MOE_WS and GLM_GLUE_DSA_IDX_CACHE must be 0 or 1')
         import glm_glue_lite
         glm_glue_lite.register()
+    if os.environ.get('GLM_INDEXER_STABLE_TOPK', '0') != '0':
+        import glm_indexer_stable_topk
+        glm_indexer_stable_topk.register()
+    if os.environ.get('GLM_INDEXER_ROW_SHARD', '0') != '0':
+        import glm_indexer_row_shard
+        glm_indexer_row_shard.register()
 except BaseException:
     import traceback
     traceback.print_exc()

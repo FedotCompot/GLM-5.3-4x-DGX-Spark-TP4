@@ -102,8 +102,13 @@ def install(module, env=None):
     factory = lambda s: StepBudget(s, threshold)
     if fair:
         decode_steps = glm_decode_fair.boot_decode_steps(env)
+        rearm = glm_decode_fair.boot_rearm(env)
         factory = lambda s: glm_decode_fair.FairStepBudget(s, threshold,
             *glm_decode_fair.control_policy(s, path, chunk, decode_steps))
+        if path or rearm != 'legacy':
+            factory = lambda s: glm_decode_fair.step_budget(s, threshold,
+                *glm_decode_fair.control_policy(s, path, chunk, decode_steps),
+                rearm=glm_decode_fair.control_rearm(s, path, rearm))
     namespace = dict(module.__dict__, _glm_budget_factory=factory)
     exec(compile('from __future__ import annotations\n' + transform(source, fair), module.__file__, 'exec'), namespace)
     module.Scheduler.schedule = namespace['schedule']

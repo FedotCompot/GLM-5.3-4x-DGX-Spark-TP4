@@ -1,0 +1,10 @@
+{
+  "triton": [],
+  "commands": [{
+    "name": "stable-prefill-topk-k2048",
+    "argv": ["nvcc", "-O3", "-std=c++17", "-arch=sm_121a", "--shared", "-Xcompiler=-fPIC", "-Xptxas=-v,-warn-spills", "{package}/overlay/bringup/stable_topk/kernel.cu", "-o", "{out}/stable_topk.so"],
+    "binary": "{out}/stable_topk.so",
+    "threads": 256,
+    "dynamic_shared": 0
+  }]
+}

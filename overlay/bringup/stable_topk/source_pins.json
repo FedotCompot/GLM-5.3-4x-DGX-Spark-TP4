@@ -1,0 +1,5 @@
+{
+  "vllm._custom_ops": "5ca3b8955ff2dca446813057e6678065a44ec283d73db4a9d8fd24328cb4ed07",
+  "vllm.model_executor.layers.sparse_attn_indexer": "22d1d98bd475b1dc22de85d0e414d0490860de50c8bbd26371175e5ea6411116",
+  "vllm.v1.worker.gpu_worker": "b2e580d74e7259ff2cbc82dabf38a43409ea5584d143880436583d9fc1ceedf1"
+}

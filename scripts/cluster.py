@@ -27,7 +27,7 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
                     'GLM_FP4_RECENT_WINDOW', 'GLM_FP4_RECENT_AB', 'GLM_LOADER', 'GLM_KV_FORMAT',
                     'GLM_MTP_ROWSELECT', 'GLM_DRAFT_EHPROJ', 'GLM_DRAFT_EHPROJ_INIT',
                     'GLM_DRAFT_HEAD', 'GLM_DRAFT_HEAD_INIT', 'GLM_DECODE_FAIR',
-                    'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL',
+                    'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL', 'GLM_DECODE_FAIR_REARM',
                     'GLM_MOE_DET_ALIGN')]
 GiB = 1 << 30
 HEALTH_POLL_S = 1          # loopback /health while booting
@@ -334,11 +334,23 @@ def remote(rank, command, timeout=45):
 OPTIONAL_KEYS = ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE',
                  'GLM_SKIP_MLA_PLAN', 'GLM_SKIP_MLA_PLAN_AB_INIT',
                  'GLM_SKIP_MLA_PLAN_KSTOP',
-                 'VLLM_SERVER_DEV_MODE', 'GLM_PARAM_HASH')
+                 'VLLM_SERVER_DEV_MODE', 'GLM_PARAM_HASH', 'GLM_INDEXER_STABLE_TOPK')
 
 
 def optional_env():
     env = {k: ENV[k].strip() for k in OPTIONAL_KEYS if ENV.get(k, '').strip() not in ('', '0')}
+    sys.path.insert(0, str(ROOT / 'overlay/bringup'))
+    import glm_indexer_row_shard
+    row_options = glm_indexer_row_shard.options(ENV)
+    if row_options is not None:
+        row_mode, row_transport = row_options
+        env.update(GLM_INDEXER_ROW_SHARD='1', GLM_INDEXER_ROW_SHARD_INIT=row_mode,
+                   GLM_INDEXER_ROW_SHARD_TRANSPORT=row_transport)
+        for key in ('GLM_INDEXER_ROW_SHARD_MODE', 'GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY'):
+            if key in ENV and ENV[key] != '':
+                env[key] = ENV[key]
+    if ENV.get('GLM_INDEXER_STABLE_TOPK', '0') not in ('0', '1'):
+        raise ValueError('GLM_INDEXER_STABLE_TOPK must be 0 or 1')
     for key in ('GLM_SCREEN_FAILSAFE', 'GLM_GREEDY_SAMPLE_FUSE', 'GLM_KSTOP_GUARD_FUSE'):
         value = ENV.get(key, '0').strip() or '0'
         if value not in ('0', '1'):
@@ -356,6 +368,15 @@ def optional_env():
             raise ValueError('canonical and deterministic MoE align are mutually exclusive')
         env['GLM_MOE_DET_ALIGN'] = '1'
     sys.path.insert(0, str(ROOT / 'overlay/bringup'))
+    l2hint = ENV.get('GLM_MARLIN_L2HINT_AB', '0') != '0'
+    l2single = ENV.get('GLM_MARLIN_L2HINT', 'off') != 'off'
+    if l2hint or l2single:
+        from glm_marlin_l2hint import mode as l2hint_mode
+        selected = l2hint_mode(ENV)
+        if selected == 'ab':
+            env.update(GLM_MARLIN_L2HINT_AB='1', VLLM_SERVER_DEV_MODE='1')
+        else:
+            env['GLM_MARLIN_L2HINT'] = 'on'
     from glm_draft_ehproj_config import options as ehproj_options
     from glm_mtp_rowselect_config import options as rowselect_options
     if rowselect_options(ENV):
@@ -386,7 +407,7 @@ def optional_env():
     hashing = env.get('GLM_PARAM_HASH', '0')
     if hashing not in ('0', '1'):
         raise ValueError('GLM_PARAM_HASH must be 0 or 1')
-    if (mode == 'ab' or hashing == '1' or recent_ab or draft_head != '0') != ('VLLM_SERVER_DEV_MODE' in env):
+    if (mode == 'ab' or hashing == '1' or recent_ab or draft_head != '0' or row_options is not None or l2hint) != ('VLLM_SERVER_DEV_MODE' in env):
         raise ValueError('VLLM_SERVER_DEV_MODE=1 needs GLM_SKIP_MLA_PLAN=ab or GLM_PARAM_HASH=1 or recent KV AB or draft head')
     if 'GLM_SKIP_MLA_PLAN_AB_INIT' in env and mode != 'ab':
         raise ValueError('GLM_SKIP_MLA_PLAN_AB_INIT applies to GLM_SKIP_MLA_PLAN=ab only')
@@ -402,7 +423,7 @@ def optional_env():
     if int(adaptive.get('GLM_PREFILL_CHUNK_THRESHOLD', '16384')) <= 0:
         raise ValueError('GLM_PREFILL_CHUNK_THRESHOLD must be positive')
     env.update(adaptive)
-    fair = {k: ENV[k] for k in ('GLM_DECODE_FAIR', 'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL') if k in ENV}
+    fair = {k: ENV[k] for k in ('GLM_DECODE_FAIR', 'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL', 'GLM_DECODE_FAIR_REARM') if k in ENV}
     sys.path.insert(0, str(ROOT / 'overlay' / 'bringup'))
     import glm_decode_fair
     glm_decode_fair.settings(dict(ENV, **env, **fair))

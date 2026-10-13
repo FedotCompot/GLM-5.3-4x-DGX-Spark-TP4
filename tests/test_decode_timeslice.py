@@ -22,7 +22,8 @@ class Timeslice(unittest.TestCase):
         T.PinnedSchedule.setUpClass()
         cls.source = T.PinnedSchedule.source
         ns = dict(T.PinnedSchedule.namespace, _glm_budget_factory=lambda s:
-                  F.FairStepBudget(s, A.THRESHOLD, s.test_chunk, s.test_decode_steps))
+                  F.step_budget(s, A.THRESHOLD, s.test_chunk, s.test_decode_steps,
+                                   getattr(s, 'test_rearm', 'legacy')))
         exec('from __future__ import annotations\n' + A.transform(cls.source, True), ns)
         cls.schedule = staticmethod(ns['schedule'])
 
@@ -198,6 +199,135 @@ class Timeslice(unittest.TestCase):
             self.assertEqual(module.Scheduler.schedule(s).num_scheduled_tokens['p'], 1024)
             self.assertEqual(s._glm_df_since_prefill, 0)
 
+    def staged(self, mode, residual=256):
+        s = scheduler(running=[request('d', 60000, 60000, decode=True)],
+                      waiting=[request('p', 60000 + residual, hits=60000)], draft_slots=0)
+        s.test_chunk, s.test_decode_steps, s.test_rearm = 4096, 40, mode
+        if residual == 1: s.num_spec_tokens = 0  # fixture has no worker to roll back padded draft rows
+        self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3, 'p': min(residual, 4093)})
+        # Arrival AFTER the mixed step: q cannot share p's spare chunk budget.
+        s.waiting.append(request('q', 80000 + 256, hits=80000))
+        return s
+
+    def test_staged_cached_completion_admits_second_prefill_earlier(self):
+        for mode, expected in (('legacy', 40), ('complete', 0), ('scaled', 3)):
+            s = self.staged(mode)
+            p = next(r for r in s.running if r.request_id == 'p')
+            self.assertEqual(p.num_computed_tokens, p.num_prompt_tokens)
+            for _ in range(expected):
+                self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3})
+                self.assertEqual([r.request_id for r in s.waiting], ['q'])
+            self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3, 'q': 256})
+            self.assertFalse(s.waiting)
+
+    def test_long_chunk_protection_same_n40_in_all_modes_and_orders(self):
+        for mode in F.REARM:
+            for reverse, waiting, slots in ((False, False, 0), (True, False, 0),
+                                            (False, True, 0), (False, False, 2)):
+                s = self.make(n=40, reverse=reverse, waiting=waiting, slots=slots)
+                s.test_rearm = mode
+                for _ in range(2):
+                    self.assertIn('p', self.step(s).num_scheduled_tokens)
+                    if not s.waiting: s.waiting.append(request('q', 80256, hits=80000))
+                    # 4089..4093 tokens still ceil to 40 in scaled mode.
+                    for _ in range(40):
+                        self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3})
+
+    def test_completed_and_unfinished_in_same_map_still_arm_complete(self):
+        s = self.make(n=40, slots=0)
+        s.running.insert(0, request('short', 60256, 60000))
+        s.test_rearm = 'complete'
+        out = self.step(s)
+        self.assertEqual(out.num_scheduled_tokens, {'short': 256, 'p': 3837, 'd': 3})
+        self.assertEqual(s._glm_df_since_prefill, 0)
+        for _ in range(40):
+            self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3})
+
+    def test_scaled_counts_aggregate_emitted_tokens_and_rounds_up(self):
+        for residual in (1, 256, 3000, 4093):
+            s = self.staged('scaled', residual)
+            hold = math.ceil(40 * residual / 4096)
+            self.assertEqual(s._glm_df_since_prefill, 40 - hold)
+            for _ in range(hold): self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3})
+            self.assertIn('q', self.step(s).num_scheduled_tokens)
+        s = self.make(n=40, slots=0)
+        s.test_rearm = 'scaled'
+        s.running = [request('a', 60200, 60000), request('b', 80312, 80000), s.running[-1]]
+        self.assertEqual(self.step(s).num_scheduled_tokens, {'a': 200, 'b': 312, 'd': 3})
+        self.assertEqual(s._glm_df_since_prefill, 35)  # ceil(40 * 512 / 4096)
+
+    def test_variant_pause_refusal_preemption_no_synthetic_credit(self):
+        for mode in ('complete', 'scaled'):
+            s = self.make(n=40, waiting=True, slots=0)
+            s.test_rearm = mode
+            alloc = s.kv_cache_manager.allocate_slots
+            s.kv_cache_manager.allocate_slots = lambda r, *a, **kw: None if r.request_id == 'p' else alloc(r, *a, **kw)
+            self.assertEqual(self.step(s).num_scheduled_tokens, {'d': 3})
+            self.assertEqual(s._glm_df_since_prefill, 40)
+            s.kv_cache_manager.allocate_slots = alloc
+            self.assertIn('p', self.step(s).num_scheduled_tokens)
+            s._pause_state = Pause.PAUSED_ALL
+            self.assertEqual(self.step(s).num_scheduled_tokens, {})
+            self.assertEqual(s._glm_df_since_prefill, 0)
+            # An attempted short prefill was removed by native preemption.
+            s._pause_state = Pause.UNPAUSED
+            short = request('short', 256)
+            budget = F.step_budget(s, A.THRESHOLD, 4096, 40, mode)
+            budget.request(short, 0, 4096, 4096, {})
+            budget.finish({})
+            self.assertEqual(s._glm_df_since_prefill, 0)
+            budget.finish({'d': 3})
+            self.assertEqual(s._glm_df_since_prefill, 1)
+
+    def test_boot_variants_without_control_use_real_installer(self):
+        for mode, expected in (('complete', 40), ('scaled', 37)):
+            module = NS(__file__=str(T.PinnedSchedule.path),
+                        Scheduler=type('Scheduler', (), {}), **T.PinnedSchedule.namespace)
+            env = dict(GLM_KV_FORMAT='fp4x', GLM_W2_PREFILL_CONTROL='/cache/prefill.json',
+                       GLM_DECODE_FAIR='1', GLM_DECODE_FAIR_REARM=mode,
+                       GLM_DECODE_FAIR_DECODE_STEPS='40')
+            A.install(module, env)
+            s = scheduler(running=[request('d', 60000, 60000, decode=True)],
+                          waiting=[request('p', 60256, hits=60000)], draft_slots=0)
+            self.assertEqual(module.Scheduler.schedule(s).num_scheduled_tokens, {'d': 3, 'p': 256})
+            self.assertEqual(s._glm_df_since_prefill, expected)
+            self.assertFalse(hasattr(s, '_glm_decode_fair_control'))
+
+    def test_variant_rank_invariance_staged_multi_step(self):
+        for mode in ('complete', 'scaled'):
+            traces = []
+            for rank in range(4):
+                s = self.staged(mode)
+                s.rank_local_mem_available = rank * 100
+                traces.append([vars(self.step(s)) for _ in range(45)])
+            self.assertTrue(all(trace == traces[0] for trace in traces))
+
+    def test_rearm_runtime_ab_and_missing_field_legacy_with_boot_variant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'fair.json'
+            module = NS(__file__=str(T.PinnedSchedule.path),
+                        Scheduler=type('Scheduler', (), {}), **T.PinnedSchedule.namespace)
+            env = dict(GLM_KV_FORMAT='fp4x', GLM_W2_PREFILL_CONTROL='/cache/prefill.json',
+                       GLM_DECODE_FAIR='1', GLM_DECODE_FAIR_CONTROL=str(path),
+                       GLM_DECODE_FAIR_REARM='complete', GLM_DECODE_FAIR_DECODE_STEPS='40')
+            A.install(module, env)
+            s = scheduler(draft_slots=0)
+            for seq, mode in enumerate(('legacy', 'complete', 'scaled', None, 'complete')):
+                control = dict(schema=2, chunk=4096, decode_steps=40, sequence=seq)
+                if mode is not None: control['rearm'] = mode
+                path.write_text(json.dumps(control))
+                s.running = [request('d', 60000, 60000, decode=True)]
+                s.waiting = T.Queue([request('p', 60256, hits=60000)])
+                self.assertEqual(module.Scheduler.schedule(s).num_scheduled_tokens, {'d': 3, 'p': 256})
+                expected = {'legacy': 0, 'complete': 40, 'scaled': 37, None: 0}[mode]
+                self.assertEqual(s._glm_df_since_prefill, expected)
+                # Unchanged controls MUST NOT reset a hold.
+                self.assertEqual(F.control_policy(s, str(path), 512), (4096, 40))
+                self.assertEqual(s._glm_df_since_prefill, expected)
+            path.write_text(json.dumps(dict(control, rearm='scaled')))
+            with self.assertRaisesRegex(RuntimeError, 'stale'):
+                module.Scheduler.schedule(s)
+
     def test_simulated_frontier_matches_cost_model(self):
         rows = []
         for chunk, n, expected_a, expected_b in ((4096, 20, 7.1, 183),
@@ -233,6 +363,31 @@ class Timeslice(unittest.TestCase):
 
 
 class Controls(unittest.TestCase):
+    def test_rearm_validation_and_writer_compatibility(self):
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location('writer', root/'scripts/decode_fair_control.py')
+        writer = importlib.util.module_from_spec(spec); spec.loader.exec_module(writer)
+        env = dict(GLM_DECODE_FAIR='1', GLM_KV_FORMAT='fp4x', GLM_W2_PREFILL_CONTROL='/cache/prefill.json')
+        self.assertEqual(F.boot_rearm(env), 'legacy')
+        for bad in ('', 'yes', 'COMPLETE'):
+            with self.assertRaises(ValueError): F.settings(dict(env, GLM_DECODE_FAIR_REARM=bad))
+        with self.assertRaises(ValueError): F.settings(dict(GLM_DECODE_FAIR_REARM='complete'))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'fair.json'
+            for mode in F.REARM:
+                path.unlink(missing_ok=True)
+                payload = writer.write(path, 4096, 0, 40, mode)
+                state = NS()
+                self.assertEqual(F.control_policy(state, str(path), 512), (4096, 40))
+                self.assertEqual(F.control_rearm(state, str(path), 'scaled'), mode)
+                for bad in ('bad', None, True, [], {}):
+                    path.write_text(json.dumps(dict(payload, rearm=bad)))
+                    with self.assertRaises(RuntimeError): F.control_policy(state, str(path), 512)
+                    with self.assertRaises(ValueError): writer.write(path, 4096, 1, 40, bad if bad is not None else 'bad')
+                path.write_text(json.dumps(dict(schema=1, chunk=4096, sequence=1, rearm=mode)))
+                with self.assertRaises(RuntimeError): F.control_policy(state, str(path), 512)
+                with self.assertRaises(ValueError): writer.write(path, 4096, 2, rearm=mode)
+
     def test_schema2_validation_and_atomic_writer(self):
         root = Path(__file__).resolve().parents[1]
         spec = importlib.util.spec_from_file_location('writer', root/'scripts/decode_fair_control.py')

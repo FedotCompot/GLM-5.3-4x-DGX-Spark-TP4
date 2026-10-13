@@ -1,0 +1,5 @@
+Pinned vLLM/Marlin CUDA sources retain their Apache-2.0 notices.
+Original sources: glm53-nvfp4-marlin-thin-20260918 evidence; see SOURCE_PINS.json.
+core/scalar_type.hpp comes from the saved PF3 source dependency.
+Stock sources recovered by reversing the G3 scratch-discard patch; all original SOURCE_PINS match.
+The build adapter generates isolated B-only L2 eviction hint specializations.

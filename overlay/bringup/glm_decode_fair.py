@@ -7,6 +7,7 @@ import sys
 from glm_adaptive_chunk import StepBudget, LARGE
 
 CHUNKS = (512, 1024, 2048, 4096)
+REARM = ('legacy', 'complete', 'scaled')
 
 
 def settings(env):
@@ -17,6 +18,7 @@ def settings(env):
     if chunk not in CHUNKS:
         raise ValueError('GLM_DECODE_FAIR_CHUNK must be 512/1024/2048/4096')
     boot_decode_steps(env)
+    boot_rearm(env)
     path = env.get('GLM_DECODE_FAIR_CONTROL', '')
     if path and (mode != '1' or not Path(path).is_absolute()):
         raise ValueError('GLM_DECODE_FAIR_CONTROL requires enabled mode and an absolute path')
@@ -34,6 +36,20 @@ def boot_decode_steps(env):
     return value
 
 
+def boot_rearm(env):
+    value = env.get('GLM_DECODE_FAIR_REARM', 'legacy')
+    if value not in REARM:
+        raise ValueError('GLM_DECODE_FAIR_REARM must be legacy/complete/scaled')
+    if value != 'legacy' and env.get('GLM_DECODE_FAIR', '0') != '1':
+        raise ValueError('GLM_DECODE_FAIR_REARM requires decode fairness')
+    return value
+
+
+def control_rearm(scheduler, path, fallback):
+    # Old schemas/files always retain the old cadence, even with a boot variant.
+    return scheduler._glm_decode_fair_control.get('rearm', 'legacy') if path else fallback
+
+
 def control_chunk(scheduler, path, fallback):
     if not path:
         return fallback
@@ -42,13 +58,15 @@ def control_chunk(scheduler, path, fallback):
     control = json.loads(Path(path).read_text())
     if (not isinstance(control, dict)
             or type(control.get('schema')) is not int or control['schema'] not in (1, 2)
-            or set(control) != ({'schema', 'chunk', 'sequence'} |
-                               ({'decode_steps'} if control['schema'] == 2 else set()))
+            or (set(control) - ({'rearm'} if control['schema'] == 2 else set())) != (
+                {'schema', 'chunk', 'sequence'} |
+                ({'decode_steps'} if control['schema'] == 2 else set()))
+            or ('rearm' in control and control['rearm'] not in REARM)
             or type(control['chunk']) is not int or control['chunk'] not in (0, *CHUNKS)
             or (control['schema'] == 2 and (type(control['decode_steps']) is not int
                                           or control['decode_steps'] < 0))
             or type(control['sequence']) is not int or control['sequence'] < 0):
-        raise RuntimeError('decode fair control schema/chunk/decode_steps/sequence')
+        raise RuntimeError('decode fair control schema/chunk/decode_steps/rearm/sequence')
     prior = getattr(scheduler, '_glm_decode_fair_control', None)
     if control != prior:
         if prior is not None and control['sequence'] <= prior['sequence']:
@@ -133,3 +151,37 @@ class FairStepBudget(StepBudget):
             self.scheduler._glm_df_since_prefill = 0
         elif any(scheduled.get(rid, 0) > 0 for rid in self.decodes):
             self.scheduler._glm_df_since_prefill = min(self.decode_steps, self.since_prefill + 1)
+
+
+class RearmStepBudget(FairStepBudget):
+    """Opt-in re-arm only; legacy budget methods and transform stay unchanged."""
+    def __init__(self, scheduler, threshold, chunk, decode_steps, rearm):
+        super().__init__(scheduler, threshold, chunk, decode_steps)
+        self.rearm = rearm
+        self.prefill_remaining = {}
+
+    def request(self, request, computed, token_budget, input_budget, scheduled):
+        if self.active and computed < request.num_prompt_tokens:
+            # Native APC/remote-KV lookup already ran; finish precedes the
+            # native _update_after_schedule advancement of computed tokens.
+            self.prefill_remaining[request.request_id] = request.num_prompt_tokens - computed
+        return super().request(request, computed, token_budget, input_budget, scheduled)
+
+    def finish(self, scheduled):
+        if not self.active or not any(scheduled.get(rid, 0) > 0 for rid in self.prefills):
+            return super().finish(scheduled)
+        if self.rearm == 'complete':
+            # Credit qu0b / SGLang #43844: protect unfinished chunks only.
+            unfinished = any(0 < scheduled.get(rid, 0) < remaining
+                             for rid, remaining in self.prefill_remaining.items())
+            self.scheduler._glm_df_since_prefill = 0 if unfinished else self.decode_steps
+        else:
+            tokens = sum(scheduled.get(rid, 0) for rid in self.prefills)
+            hold = (self.decode_steps * tokens + self.chunk - 1) // self.chunk
+            self.scheduler._glm_df_since_prefill = self.decode_steps - hold
+
+
+def step_budget(scheduler, threshold, chunk, decode_steps=0, rearm='legacy'):
+    if rearm == 'legacy':
+        return FairStepBudget(scheduler, threshold, chunk, decode_steps)
+    return RearmStepBudget(scheduler, threshold, chunk, decode_steps, rearm)

@@ -1,5 +1,12 @@
 # Credits
 
+- **vLLM #54951 and #54394 authors and contributors**: TP prefill indexer row ownership
+  and index exchange, Apache-2.0 ([#54951](https://github.com/vllm-project/vllm/pull/54951),
+  [#54394](https://github.com/vllm-project/vllm/pull/54394)). The local checked-only
+  implementation uses padded equal gathers and preserves FP4x's original query tiles.
+  No upstream code is copied. Local survey references supply the idea; upstream
+  author handles were not available in the offline packet.
+
 - **Allan Clark / ajclark**: coalesced original-checkpoint reader, two event-fenced pinned tiles,
   owning CUDA batches, producer queue and storage-lifetime budgets, ported from
   [GLM-5.3-DCP4-DFlash2-NVMe-KV-Offload-4x-DGX-Spark](https://github.com/ajclark/GLM-5.3-DCP4-DFlash2-NVMe-KV-Offload-4x-DGX-Spark/tree/f0b64af5ac6028624e5ae255d998faa1e0a9324a/runtime/nvme_loader).
@@ -132,7 +139,11 @@ This repository does not claim a blanket relicense of either project or of exter
   (Agrawal et al., "Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve", OSDI 2024), which
   bounds prefill work per step so decodes keep progressing; no code from it is used. The aggregate prefill cap with
   decode reservations, the N pure-decode steps between chunks, the mixed-step cost model, the schema-2 runtime
-  sidecar and the CPU tests are local work (knapcio).
+  sidecar and the CPU tests are local work (knapcio). **qu0b / SGLang contributors**:
+  [SGLang #43844](https://github.com/sgl-project/sglang/pull/43844) identified the completed
+  cached/short-prefill re-arm delay and proposed chunk-only decode protection. The optional
+  `complete` policy follows that idea; `scaled` and this vLLM implementation are local work.
+  No SGLang source is copied.
 
 - **FP4x KV storage**: knapcio's original dc5ad9e E2M1/block-E4M3/power-of-two-row
   encoder, packed ABI, fused writer/readers and CPU tests. NVIDIA and Triton contributors:
@@ -142,6 +153,22 @@ This repository does not claim a blanket relicense of either project or of exter
   Tech2wild/tonyd2wild supplied the checkpoint and recipe lineage; no FP4 kernel or ABI implementation from them is copied.
 
 ## Experimental KV headroom planning
+
+Queue #39b stable prefill selection: **vLLM contributors**, Apache-2.0,
+`csrc/libtorch_stable/sampler.cu` and the image's DCP CuTe stable-key selector
+at `487ecf187`, provide the contracts and score/index radix-key idea;
+**NVIDIA CUB** provides the block radix sort and CUDA warp match intrinsics.
+The threshold-prefix selector, canonical output sort integration, CPU oracle,
+source-pinned hooks and event-only benchmark are original local work (knapcio).
+No upstream kernel implementation is copied.
+
+- **Experimental Marlin L2 cache policy (default OFF)**: sudoingX/
+  [dgx-spark-deepseek-v41](https://github.com/sudoingX/dgx-spark-deepseek-v41)
+  supplied the evict-first expert-weight stream idea; no code copied from that
+  project. Elias Frantar / IST-DASLab, Neural Magic and vLLM contributors:
+  Apache-2.0 Marlin MoE source. NVIDIA: PTX policy instructions. knapcio:
+  G-screen b77256c, isolated serving extension, graph banks and paired probe.
+  Full provenance: `overlay/bringup/l2hint_native/CREDITS.md`.
 
 The conditional cache policy uses Linux kernel memory interfaces and the
 Tech2wild/tonyd2wild serving comparison as motivation. The memory-pool extension
