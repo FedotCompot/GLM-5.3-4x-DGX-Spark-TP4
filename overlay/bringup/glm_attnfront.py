@@ -153,7 +153,9 @@ def rope(owner,positions,q,k,x):
     rotary=owner.rotary_emb
     # This piece covers only the measured native CUDA op, never FlashInfer
     # or DeepseekScaling's out-of-place native Python arithmetic.
-    native=(rotary.enabled() and (type(rotary).__name__=='RotaryEmbedding' and not rotary.use_flashinfer
+    # Read the dispatch CustomOp chose at construction; enabled() needs the
+    # vLLM config context, which is not set during forward.
+    native=(getattr(rotary._forward_method,'__name__','')=='forward_cuda' and (type(rotary).__name__=='RotaryEmbedding' and not rotary.use_flashinfer
             or type(rotary).__name__=='DeepseekV4ScalingRotaryEmbedding'))
     ok=(CONFIG[2] and native and q.is_cuda and q.dtype==torch.bfloat16
         and 1<=q.shape[0]<=16 and q.shape[1:]==(16,64) and k.shape[1:]==(1,64)

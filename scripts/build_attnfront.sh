@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:?usage: build_attnfront.sh NEW_RECEIPT_DIRECTORY}
-mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
+mkdir -p "$OUT"; chmod 0777 "$OUT"; OUT=$(cd "$OUT" && pwd)
 [[ ! -e "$OUT/build.json" ]] || { echo 'Refuse existing receipt' >&2; exit 1; }
 IMAGE=sha256:4def0ef644cb2e9814136dcffd5e385e21bc594f48f3b292234051904abe85a6
 CTX=${ATTNFRONT_DOCKER_CONTEXT:-default}
