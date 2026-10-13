@@ -249,7 +249,7 @@ class Sources(unittest.TestCase):
         self.assertIn('kv_cache_dummy_dep=kv_cache_dummy_dep',result)
         front=a.transform_front((IMAGE/'model_executor/layers/mla.py').read_text())
         self.assertIn('attnfront_dep=_front_dep',front)
-        self.assertLess(front.index('_af_rope('),front.index('self.indexer(hidden_states'))
+        self.assertLess(front.index('_af_rope_cached('),front.index('self.indexer(hidden_states'))
     def test_switch_off_startup_cannot_register(self):
         tree=ast.parse((ROOT/'overlay/bringup/sitecustomize.py').read_text())
         guards=[n for n in ast.walk(tree) if isinstance(n,ast.If) and any(isinstance(v,ast.Import) and any(alias.name=='glm_attnfront' for alias in v.names) for v in n.body)]
@@ -330,12 +330,15 @@ class OnDry(unittest.TestCase):
 class Flow(unittest.TestCase):
     def test_stock_and_transformed_tensor_flow_all_m_and_pieces(self):
         import torch
+        class CPUCuda(torch.Tensor):
+            @property
+            def is_cuda(self): return True
         raw=(IMAGE/'model_executor/layers/mla.py').read_text()
         old=a.method(raw,'MultiHeadLatentAttentionWrapper','forward')
         new=a.transform_front(raw)
         for m in range(1,17):
             torch.manual_seed(m)
-            h=torch.randn((m,6144),dtype=torch.bfloat16)
+            h=torch.randn((m,6144),dtype=torch.bfloat16).as_subclass(CPUCuda)
             projected=torch.randn((m,2624),dtype=torch.bfloat16)
             weightq=torch.randn(2048,dtype=torch.bfloat16);weightk=torch.randn(512,dtype=torch.bfloat16)
             def norm(x,w,eps):
@@ -346,7 +349,7 @@ class Flow(unittest.TestCase):
                 def attention(q,k,r,**kw):
                     observed['cache_norm']=k.clone();observed['k_rope']=r.clone();observed['dependency']=kw.get('attnfront_dep')
                     return k
-                owner=types.SimpleNamespace(q_lora_rank=2048,kv_lora_rank=512,qk_rope_head_dim=64,
+                owner=types.SimpleNamespace(hidden_size=6144,q_lora_rank=2048,kv_lora_rank=512,qk_rope_head_dim=64,
                     fused_qkv_a_proj=lambda x:(projected,None),q_a_layernorm=lambda x:norm(x,weightq,1e-5),
                     kv_a_layernorm=lambda x:norm(x,weightk,1e-5),q_b_proj=linear,fuse_qkv_rmsnorm=False,
                     num_heads=16,dcp_q_replicate=False,qk_head_dim=256,qk_nope_head_dim=192,v_head_dim=256,
@@ -358,6 +361,12 @@ class Flow(unittest.TestCase):
                     _af_partitions=lambda owner,x: projected.split([2048,576],-1) if not mask&1 else (projected[:,:2048].contiguous(),projected[:,2048:].contiguous()),
                     _af_norms=lambda owner,q,k:(norm(q,weightq,1e-5),norm(k,weightk,1e-5)),
                     _af_rope=lambda owner,p,q,k,x:(q,k,torch.empty(0) if mask&4 else None))
+                owner._glm_attnfront_stock=lambda *args: self.fail('cached path unexpectedly fell back')
+                owner._glm_attnfront_pieces=tuple(bool(mask&(1<<i)) for i in range(3))
+                ns.update(_af_bf16=torch.bfloat16,_af_debug=False,_af_capturing=lambda:False,
+                    _af_record=lambda *args:self.fail('eager bookkeeping'),
+                    _af_apply_parts=lambda layer,x:(projected[:,:2048].contiguous(),projected[:,2048:].contiguous()),
+                    _af_rope_cached=lambda owner,p,q,k,x:(q,k,torch.empty(0)))
                 exec(compile(new,'fused','exec'),ns,fns)
                 result=fns['forward'](owner,torch.arange(m),h)
                 self.assertTrue(torch.equal(result.view(torch.uint8),expected.view(torch.uint8)))

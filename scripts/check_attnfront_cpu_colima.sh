@@ -29,6 +29,6 @@ docker --context colima run --pull never --platform linux/arm64 --name "$NAME" -
  -e PYTHONPATH=tests -e GLM_MARLIN_L2HINT=off -e GLM_IMAGE_SRC=/usr/local/lib/python3.12/dist-packages \
  -e PYTHONDONTWRITEBYTECODE=1 -e PATH=/receipt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
  -v "$ROOT:/input:ro" -v "$OUT:/receipt:ro" -w /input --entrypoint timeout "$IMAGE" \
- 180s nice -n 10 python3 -B -m unittest test_attnfront test_attnfront_crossboot test_launcher test_nvfp4_attn \
+ 180s nice -n 10 python3 -B -m unittest test_attnfront test_attnfront_host test_attnfront_crossboot test_launcher test_nvfp4_attn \
  > "$OUT/cpu.log" 2>&1
 cat "$OUT/cpu.log"

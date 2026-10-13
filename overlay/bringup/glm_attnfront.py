@@ -18,6 +18,8 @@ FLAGS = ('GLM_ATTN_FRONT_PARTS', 'GLM_ATTN_FRONT_NORMS', 'GLM_ATTN_FRONT_ROPE_PA
 CONFIG = None
 COUNTS = dict(parts=0, norms=0, rope_pack=0, parts_fallback=0, norms_fallback=0, rope_fallback=0)
 _HITS = set()
+DEBUG = False
+_RMS_PROVIDERS = {}
 # (hidden, q rank, kv rank, rope dim, local heads, nope dim, value dim).
 # Admission is explicit; widths/strides passed to operators come from the owner.
 ADMITTED_SHAPES = frozenset({
@@ -99,7 +101,7 @@ def method(raw, owner, name):
     return textwrap.dedent(''.join(raw.splitlines(keepends=True)[node.lineno-1:node.end_lineno]))
 
 
-def transform_front(raw):
+def transform_front(raw, cached=True):
     s=method(raw,'MultiHeadLatentAttentionWrapper','forward')
     s=once(s,'    q_c = None\n','    _front_norm = _af_norm_eligible(self, hidden_states)\n    _front_dep = None\n    q_c = None\n')
     s=once(s,'''        qkv_lora = self.fused_qkv_a_proj(hidden_states)[0]
@@ -119,7 +121,135 @@ def transform_front(raw):
             self, positions, q[..., self.qk_nope_head_dim :], k_pe, kv_c_normed
         )''')
     s=once(s,'        q_dcp_replicated=q_dcp_replicated,\n','        q_dcp_replicated=q_dcp_replicated,\n        attnfront_dep=_front_dep,\n')
+    if cached:
+        s=once(s, '    _front_norm = _af_norm_eligible(self, hidden_states)\n', '''    # Large/mixed prefill takes the unmodified stock method before any work.
+    if not 1 <= hidden_states.shape[0] <= 16:
+        return self._glm_attnfront_stock(positions, hidden_states, llama_4_scaling)
+    # Rank/hidden width follow the loaded model's projection contract.
+    if hidden_states.dtype != _af_bf16 or not hidden_states.is_cuda:
+        return self._glm_attnfront_stock(positions, hidden_states, llama_4_scaling)
+    _front_parts, _front_norm, _front_rope = self._glm_attnfront_pieces
+    if _af_debug or _af_capturing():
+        _af_record(self, hidden_states.shape[0])
+''')
+        s=once(s, '        q_c, kv_lora = _af_partitions(self, hidden_states)', '''        if _front_parts:
+            q_c, kv_lora = _af_apply_parts(self.fused_qkv_a_proj, hidden_states)
+        else:
+            qkv_lora = self.fused_qkv_a_proj(hidden_states)[0]
+            q_c, kv_lora = qkv_lora.split(
+                [self.q_lora_rank, self.kv_lora_rank + self.qk_rope_head_dim], dim=-1)
+'''.rstrip())
+        s=once(s, '''        q[..., self.qk_nope_head_dim :], k_pe, _front_dep = _af_rope(
+            self, positions, q[..., self.qk_nope_head_dim :], k_pe, kv_c_normed
+        )''', '''        if _front_rope:
+            q[..., self.qk_nope_head_dim :], k_pe, _front_dep = _af_rope_cached(
+                self, positions, q[..., self.qk_nope_head_dim :], k_pe, kv_c_normed)
+        else:
+            q[..., self.qk_nope_head_dim :], k_pe = self.rotary_emb(
+                positions, q[..., self.qk_nope_head_dim :], k_pe)
+'''.rstrip())
     return s
+
+
+def rms_provider_supported(owner, x, parts):
+    """Boot-fixed dispatch; validate every admitted M/layout once per signature.
+
+    Probe metadata only (empty_strided launches no kernel). Pinned vllm_c
+    supports_args tests dtype/variance; include shape/stride/epsilon/device so
+    another prioritized provider cannot be mistaken for that stock provider.
+    """
+    import torch
+    from vllm import ir
+    stride=owner.q_lora_rank+owner.kv_lora_rank+owner.qk_rope_head_dim
+    for n,width in ((owner.q_a_layernorm,owner.q_lora_rank),
+                    (owner.kv_a_layernorm,owner.kv_lora_rank)):
+        rs=(width if width==owner.q_lora_rank else width+owner.qk_rope_head_dim) if parts else stride
+        for m in range(1,17):
+            key=(m,width,rs,x.dtype,x.device,n.weight.dtype,n.weight.device,
+                 n.weight.stride(0),n.variance_epsilon)
+            if key not in _RMS_PROVIDERS:
+                probe=torch.empty_strided((m,width),(rs,1),dtype=x.dtype,device=x.device)
+                _RMS_PROVIDERS[key]=(ir.ops.rms_norm.dispatch(
+                    probe,n.weight,n.variance_epsilon,None).provider=='vllm_c')
+            if not _RMS_PROVIDERS[key]:
+                return False
+    return True
+
+
+def static_pieces(owner, x):
+    """Loaded owner contract. Called once, never from the installed fast path."""
+    if not quantized_owner(owner):
+        return (False,False,False)
+    parts=CONFIG[0] and nvfp4_owner(owner)
+    norm_contract=(not owner.fuse_qkv_rmsnorm
+        and type(owner.q_a_layernorm).__name__=='RMSNorm'
+        and type(owner.kv_a_layernorm).__name__=='RMSNorm'
+        and all(n.pass_weight and n.variance_size_override is None
+                and str(n.weight.dtype)=='torch.bfloat16' and tuple(n.weight.shape)==(width,)
+                for n,width in ((owner.q_a_layernorm,owner.q_lora_rank),
+                                (owner.kv_a_layernorm,owner.kv_lora_rank))))
+    # A CPU/profile first call must not permanently disqualify a CUDA owner.
+    norms_ok=CONFIG[1] and norm_contract
+    if norms_ok:
+        import torch
+        probe=x if x.is_cuda and x.dtype==torch.bfloat16 else torch.empty(
+            0,device=owner.q_a_layernorm.weight.device,dtype=torch.bfloat16)
+        norms_ok=rms_provider_supported(owner,probe,parts)
+    rotary=owner.rotary_emb
+    native=(getattr(getattr(rotary,'_forward_method',None),'__name__','')=='forward_cuda'
+            and (type(rotary).__name__=='RotaryEmbedding' and not rotary.use_flashinfer
+                 or type(rotary).__name__=='DeepseekV4ScalingRotaryEmbedding'))
+    # The pinned non-fused RMSNorm produces contiguous kv_c_normed; q_b_proj
+    # produces [M,H*qk_dim], and admitted projections produce the two k strides.
+    rope_ok=(CONFIG[2] and native and norm_contract
+        and owner.qk_head_dim==owner.qk_nope_head_dim+owner.qk_rope_head_dim
+        and rotary.rotary_dim==owner.qk_rope_head_dim and not owner.dcp_q_replicate
+        and not owner.mla_attn.use_pcp
+        and getattr(owner.mla_attn.impl,'dcp_world_size',1)==1
+        and not getattr(owner.mla_attn.impl,'_glm_recent_bank',None))
+    return (bool(parts),bool(norms_ok),bool(rope_ok))
+
+
+def record(owner, rows):
+    for enabled,piece,fallback in zip(owner._glm_attnfront_pieces,
+            ('parts','norms','rope_pack'),('parts_fallback','norms_fallback','rope_fallback')):
+        if enabled:
+            hit(piece,rows,owner)
+        else:
+            COUNTS[fallback]+=1
+
+
+def rope_cached(owner, positions, q, k, x):
+    import torch
+    rotary=owner.rotary_emb
+    cache=rotary._match_cos_sin_cache_dtype(q) if owner._glm_attnfront_match_cache else rotary.cos_sin_cache
+    dep=torch.ops.glm_attnfront.rope_update(q,k,x,positions,cache,
+        owner.mla_attn.layer_name,rotary.is_neox_style)
+    return q,k,dep
+
+
+def bind_forward(owner, original, patched):
+    """First-call initialization happens after quantization/weight loading."""
+    @functools.wraps(original)
+    def initialize(self, positions, hidden_states, llama_4_scaling=None):
+        self._glm_attnfront_stock=original.__get__(self,type(self))
+        self._glm_attnfront_pieces=static_pieces(self,hidden_states)
+        self._glm_attnfront_match_cache=type(self.rotary_emb).__name__=='RotaryEmbedding'
+        if hasattr(self,'register_load_state_dict_post_hook') and not getattr(self,'_glm_attnfront_reload_hook',False):
+            self.register_load_state_dict_post_hook(lambda module,keys: invalidate(module))
+            self._glm_attnfront_reload_hook=True
+        self.forward=(patched if any(self._glm_attnfront_pieces) else original).__get__(self,type(self))
+        return self.forward(positions,hidden_states,llama_4_scaling)
+    owner._glm_attnfront_original=original
+    owner._glm_attnfront_initialize=initialize
+    owner.forward=initialize
+
+
+def invalidate(owner):
+    """Revalidate after custom in-place reloads; normal state_dict uses a hook."""
+    for name in ('forward','_glm_attnfront_pieces','_glm_attnfront_stock',
+                 '_glm_attnfront_match_cache'):
+        owner.__dict__.pop(name,None)
 
 
 def transform_common(raw):
@@ -268,21 +398,30 @@ def install(mod):
     if hashlib.sha256(raw.encode()).hexdigest()!=PINS[mod.__name__]:
         raise RuntimeError('attention front source drift '+mod.__name__)
     if mod.__name__==FRONT:
+        import torch
+        from glm_nvfp4_attn import apply_partitions
         owner=mod.MultiHeadLatentAttentionWrapper
+        original=owner.forward
         transformed=transform_front(raw)
         mod.__dict__.update(_af_partitions=partitions,_af_norm_eligible=norm_eligible,
-                            _af_norms=norms,_af_rope=rope)
+                            _af_norms=norms,_af_rope=rope,
+                            _af_apply_parts=apply_partitions,_af_rope_cached=rope_cached,
+                            _af_bf16=torch.bfloat16,_af_debug=DEBUG,
+                            _af_capturing=torch.cuda.is_current_stream_capturing,_af_record=record)
     else:
         owner=mod.MLAAttention
         transformed=transform_common(raw)
     ns={}
     exec(compile(transformed,mod.__file__,'exec'),mod.__dict__,ns)
-    owner.forward=ns['forward']
+    if mod.__name__==FRONT:
+        bind_forward(owner,original,ns['forward'])
+    else:
+        owner.forward=ns['forward']
     mod._glm_attnfront=True
 
 
 def register(env=None):
-    global CONFIG
+    global CONFIG, DEBUG
     selected=options(env)
     if selected is None:
         return False
@@ -292,6 +431,7 @@ def register(env=None):
         return True
     check_pins()
     CONFIG=selected
+    DEBUG=(os.environ if env is None else env).get('GLM_ATTN_FRONT_DEBUG','0')=='1'
     register_ops()
     class Finder(importlib.abc.MetaPathFinder):
         busy=set()
