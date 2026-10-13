@@ -13,9 +13,20 @@ ACTUAL=$("${DOCKER[@]}" image inspect "$IMAGE" --format '{{.Id}}')
 [[ "$ACTUAL" == sha256:4def0ef644cb2e9814136dcffd5e385e21bc594f48f3b292234051904abe85a6 ]] || {
   echo 'Pinned image mismatch; no pull or build' >&2; exit 1;
 }
+# Unique, owned names; preserve stopped containers on success and failure.
+TAG="l2hint-$(date +%Y%m%d%H%M%S)-$$"
+BUILD_CTN="$TAG-build"
+CHECK_CTN="$TAG-selfcheck"
+printf '%s\n' "$BUILD_CTN" "$CHECK_CTN" > "$OUT/containers.txt"
+cleanup() {
+  "${DOCKER[@]}" stop --time 10 "$BUILD_CTN" "$CHECK_CTN" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 # No GPU, network, packages, host process namespace, model weights or fleet state.
 # Two sequential nvcc calls, each timeout150s; dump calls timeout30s.
-"${DOCKER[@]}" run --rm --network none --cpus 2 --memory 1536m --memory-swap 1536m \
+"${DOCKER[@]}" run --name "$BUILD_CTN" --network none --cpus 2 --memory 1536m --memory-swap 1536m \
   -v "$ROOT/overlay/bringup:/kit:ro" -v "$OUT:/out" \
   -e PYTHONPATH=/kit -e PYTHONDONTWRITEBYTECODE=1 -e MAX_JOBS=2 \
   -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 \
@@ -24,7 +35,7 @@ ACTUAL=$("${DOCKER[@]}" image inspect "$IMAGE" --format '{{.Id}}')
   > "$OUT/build.log" 2>&1
 test -s "$OUT/assembly.json"
 # Bind the toolkit stub only in a separate no-GPU registration check.
-"${DOCKER[@]}" run --rm --network none --cpus 2 --memory 1536m --memory-swap 1536m \
+"${DOCKER[@]}" run --name "$CHECK_CTN" --network none --cpus 2 --memory 1536m --memory-swap 1536m \
   -v "$ROOT/overlay/bringup:/kit:ro" -v "$OUT:/out" \
   -e PYTHONPATH=/kit -e PYTHONDONTWRITEBYTECODE=1 -e OMP_NUM_THREADS=1 \
   -e OPENBLAS_NUM_THREADS=1 --entrypoint timeout "$ACTUAL" \

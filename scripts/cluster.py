@@ -357,10 +357,14 @@ def optional_env():
         env['GLM_MOE_DET_ALIGN'] = '1'
     sys.path.insert(0, str(ROOT / 'overlay/bringup'))
     l2hint = ENV.get('GLM_MARLIN_L2HINT_AB', '0') != '0'
-    if l2hint:
-        from glm_marlin_l2hint import options as l2hint_options
-        l2hint_options(ENV)
-        env.update(GLM_MARLIN_L2HINT_AB='1', VLLM_SERVER_DEV_MODE='1')
+    l2single = ENV.get('GLM_MARLIN_L2HINT', 'off') != 'off'
+    if l2hint or l2single:
+        from glm_marlin_l2hint import mode as l2hint_mode
+        selected = l2hint_mode(ENV)
+        if selected == 'ab':
+            env.update(GLM_MARLIN_L2HINT_AB='1', VLLM_SERVER_DEV_MODE='1')
+        else:
+            env['GLM_MARLIN_L2HINT'] = 'on'
     from glm_draft_ehproj_config import options as ehproj_options
     from glm_mtp_rowselect_config import options as rowselect_options
     if rowselect_options(ENV):

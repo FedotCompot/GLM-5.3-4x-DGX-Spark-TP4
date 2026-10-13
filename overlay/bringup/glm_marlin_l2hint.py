@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Private in-boot two-bank Marlin cache-policy experiment. No hooks when OFF.
+"""Fixed single-bank serving or private two-bank cache-policy experiment.
+No hooks when OFF.
 
 Only BF16/U4B8/group128 target gate_up/down, block8/16. Native MTP is
 NVFP4 and remains stock. Alignment, scratch locks, reduction and launch
@@ -33,6 +34,8 @@ PARAMETERS = ('input', 'output', 'b_qweight', 'b_bias', 'b_scales',
               'size_k', 'is_k_full', 'use_atomic_add', 'use_fp32_reduce',
               'is_zp_float', 'thread_k', 'thread_n', 'blocks_per_sm')
 _REGISTERED = False
+_mode = 'off'
+BINARY = Path('/overlay/l2hint-serving/candidate/marlin.so')
 _runtime = 0
 _capture = None
 _profiling = False
@@ -53,15 +56,26 @@ def sha256(path):
     return h.hexdigest()
 
 
-def options(env):
-    value = env.get('GLM_MARLIN_L2HINT_AB', '0')
-    if value not in ('0', '1'):
+def mode(env):
+    serving = env.get('GLM_MARLIN_L2HINT', 'off')
+    ab = env.get('GLM_MARLIN_L2HINT_AB', '0')
+    if serving not in ('off', 'on'):
+        raise ValueError('GLM_MARLIN_L2HINT must be off or on')
+    if ab not in ('0', '1'):
         raise ValueError('GLM_MARLIN_L2HINT_AB must be 0 or 1')
-    if value == '1' and (env.get('VLLM_USE_V2_MODEL_RUNNER') != '1'
-                        or env.get('VLLM_SERVER_DEV_MODE') != '1'
-                        or env.get('GLM_MOE_DET_ALIGN') != '1'):
-        raise ValueError('L2 hint AB requires V2, private dev RPC and det-align')
-    return value == '1'
+    if serving == 'on' and ab == '1':
+        raise ValueError('single-bank L2 hint and AB are mutually exclusive')
+    selected = 'ab' if ab == '1' else serving
+    if selected != 'off' and (env.get('VLLM_USE_V2_MODEL_RUNNER') != '1'
+                              or env.get('GLM_MOE_DET_ALIGN') != '1'):
+        raise ValueError('L2 hint requires V2 and det-align')
+    if selected == 'ab' and env.get('VLLM_SERVER_DEV_MODE') != '1':
+        raise ValueError('L2 hint AB requires private dev RPC')
+    return selected
+
+
+def options(env):
+    return mode(env) != 'off'
 
 
 def current():
@@ -117,7 +131,7 @@ def dispatch(stock, hint, flag, u4b8):
         if not qualified(p, u4b8):
             _counts['fallback'] = _counts.get('fallback', 0) + 1
             return stock(*(p[n] for n in PARAMETERS))
-        key = f'{current()}|{p["size_k"]}x{p["size_n"]}|block{p["moe_block_size"]}'
+        key = f'{"single" if flag is None else current()}|{p["size_k"]}x{p["size_n"]}|block{p["moe_block_size"]}'
         _counts[key] = _counts.get(key, 0) + 1
         return hint(input, output, b_qweight, b_bias, b_scales, a_scales,
                     global_scale, b_qzeros, g_idx, perm, workspace, sorted_token_ids,
@@ -125,6 +139,11 @@ def dispatch(stock, hint, flag, u4b8):
                     top_k, mul_topk_weights, b_q_type.id, size_m, size_n, size_k,
                     is_k_full, use_atomic_add, use_fp32_reduce, is_zp_float,
                     thread_k, thread_n, blocks_per_sm, True)
+
+    if flag is None:
+        # Fixed at boot: never consult runtime/capture state on serving calls.
+        on._glm_l2hint = True
+        return on
 
     @functools.wraps(stock)
     def call(*args, **kwargs):
@@ -140,7 +159,7 @@ def dispatch(stock, hint, flag, u4b8):
 def install_ops(module):
     if not getattr(module.moe_wna16_marlin_gemm, '_glm_l2hint', False):
         module.moe_wna16_marlin_gemm = dispatch(
-            module.moe_wna16_marlin_gemm, _hint_op, current, _u4b8)
+            module.moe_wna16_marlin_gemm, _hint_op, None if _mode == 'on' else current, _u4b8)
 
 
 def install_graphs(module):
@@ -213,6 +232,8 @@ def install_graphs(module):
 
 
 def validate_switch(value):
+    if _mode == 'on':
+        raise RuntimeError('single-bank L2 hint has no runtime switch')
     if type(value) is not str or value not in ('0', '1'):
         raise ValueError('L2 hint RPC takes string 0 or 1')
     if _capture is not None or _profiling:
@@ -277,11 +298,14 @@ def install_core(module):
 
 
 def register(env=None):
-    global _REGISTERED, _hint_op, _u4b8, _binary_hash, _config_hash
+    global _REGISTERED, _hint_op, _u4b8, _binary_hash, _config_hash, _mode
     env = os.environ if env is None else env
-    if not options(env):
+    selected = mode(env)
+    if selected == 'off':
         return False
     if _REGISTERED:
+        if selected != _mode:
+            raise RuntimeError('L2 hint mode is immutable after registration')
         return True
     if env.get('GLM_AB_VARIANTS', '0') not in ('0', '1'):
         raise ValueError('use dedicated L2 hint banks; GLM_AB harness conflicts')
@@ -289,18 +313,23 @@ def register(env=None):
     for name, pin in PINS.items():
         if sha256(root / (name.removeprefix('vllm.').replace('.', '/') + '.py')) != pin:
             raise RuntimeError('L2 hint source drift ' + name)
-    binary = Path('/cache/l2hint-serving/candidate/marlin.so')
+    binary = BINARY
     receipt = json.loads(binary.with_name('build.json').read_text())
     assembly = json.loads(binary.parent.parent.joinpath('assembly.json').read_text())
     selfcheck = json.loads(binary.parent.parent.joinpath('selfcheck.json').read_text())
     _binary_hash = sha256(binary)
-    _config_hash = hashlib.sha256(json.dumps(dict(binary=_binary_hash, runtime=sha256(__file__),
+    _config_hash = hashlib.sha256(json.dumps(dict(binary=_binary_hash, mode=selected, runtime=sha256(__file__),
         sources=receipt['source_sha256'], det=env.get('GLM_MOE_DET_ALIGN'),
         glue=env.get('GLM_GLUE_MOE_WS')), sort_keys=True).encode()).hexdigest()
     if receipt['reference'] or receipt['binary_sha256'] != _binary_hash or (
             assembly['status'] != 'STATIC_PASS' or assembly['candidate_sha256'] != _binary_hash
             or selfcheck['status'] != 'SELFCHECK_PASS' or selfcheck['cuda_initialized'] is not False):
         raise RuntimeError('L2 hint absent/drifted assembly receipt')
+    native = Path(__file__).parent / 'l2hint_native'
+    sources = {str(p.relative_to(native)) for p in native.rglob('*')
+               if p.is_file() and '__pycache__' not in p.parts}
+    if set(receipt['source_sha256']) != sources:
+        raise RuntimeError('L2 hint incomplete build source pins')
     for name, pin in receipt['source_sha256'].items():
         if sha256(Path(__file__).parent / 'l2hint_native' / name) != pin:
             raise RuntimeError('L2 hint build source drift ' + name)
@@ -308,14 +337,26 @@ def register(env=None):
         raise RuntimeError('L2 hint stock provider differs from build image')
     import torch
     from vllm.scalar_type import scalar_types
+    torch.ops.load_library(str(root / receipt['stock_binary_name']))
     torch.ops.load_library(str(binary))
     _hint_op = torch.ops._glm_l2hint_C.moe_wna16_marlin_gemm
+    # Actual registrations, not just a saved build receipt, must match at boot.
+    from l2hint_native.selfcheck import check_schemas
+    stock_schema, hint_schema = check_schemas(torch.ops._moe_C.moe_wna16_marlin_gemm, _hint_op)
+    if (selfcheck['stock_schema'], selfcheck['hint_schema']) != (stock_schema, hint_schema):
+        raise RuntimeError('L2 hint live ABI differs from selfcheck receipt')
+    _mode = selected
     _u4b8 = scalar_types.uint4b8.id
     from glm_skip_mla_plan import Hooks
     hooks = Hooks()
     sys.meta_path.insert(0, hooks)
-    for name, installer in ((OPS, install_ops), (CG, install_graphs),
-                            (WORKER, install_worker), (CORE, install_core)):
+    installers = [(OPS, install_ops)]
+    if selected == 'ab':
+        installers += [(CG, install_graphs), (WORKER, install_worker), (CORE, install_core)]
+    # Single mode leaves capture/profile/replay and worker/core RPC untouched.
+    for name, installer in installers:
         hooks.after_import(name, installer)
     _REGISTERED = True
+    print(f'L2HINT_READY mode={selected} binary={binary} sha256={_binary_hash} '
+          f'config={_config_hash} hooks={len(installers)} mtp=stock-NVFP4', file=sys.stderr, flush=True)
     return True

@@ -1,6 +1,16 @@
 # Queue 36 stage B: in-model Marlin weight eviction hints
 
-Experimental and default OFF: `GLM_MARLIN_L2HINT_AB=1` installs a narrow
+Default OFF: `GLM_MARLIN_L2HINT=on` installs the fixed hint dispatcher in
+ordinary serving. `off` (or unset) installs no hooks. The single-bank mode
+patches only the Marlin wrapper: stock graph capture, memory profiling and
+replay are unchanged; no second bank, worker RPC or EngineCore RPC is installed.
+It requires V2 and deterministic alignment, and does not enable dev mode.
+Target gate_up/down use the same qualified metadata below; MTP NVFP4 and
+unsupported metadata use stock. The dispatcher does not read an environment
+variable or runtime bank selector after boot. Rollback requires a fresh OFF
+boot. Single ON and AB cannot be combined.
+
+Experimental A/B remains available: `GLM_MARLIN_L2HINT_AB=1` installs a narrow
 dispatcher and two target FULL graph banks. There is no initial-ON option:
 every boot starts on bank 0. `glm_l2hint_switch("0"|"1")` selects the bank
 through a drained EngineCore collective RPC. Every TP rank votes on readiness,
@@ -51,7 +61,9 @@ RAM without swap and no network/GPU/model mounts. Each compiler call is
 bounded at 150 seconds; the complete build container at 480 seconds plus
 10 seconds TERM grace. A separate toolkit-stub registration selfcheck is
 bounded at 45 seconds plus 10 seconds grace. Maximum total is 545 seconds
-plus Docker startup/inspect overhead. No serving image binary is overwritten.
+plus Docker startup/inspect overhead. Both containers receive unique names
+recorded in `containers.txt`; success/failure/interrupt stops and retains them.
+No build container is auto-removed. No serving image binary is overwritten.
 
 The checker requires six ON B-derived PTX hints, six hint-free copies, six
 unhinted SASS instruction streams equal to a freshly compiled pinned stock
@@ -62,11 +74,15 @@ comparison with the image's full precompiled library. A toolkit libcuda stub
 allows both libraries to register without CUDA initialization; their real
 schemas must match except namespace and the final bool hint argument.
 
-Put the build output at `overlay/cache/l2hint-serving/` before normal overlay
+Put the build output at `overlay/l2hint-serving/` before normal overlay
 sync, preserving `candidate/{marlin.so,build.json}`, `assembly.json` and
 `selfcheck.json`. Runtime verifies source hashes, actual stock provider hash,
-candidate binary hash and receipts. The other logs/reference binary are
-diagnostic artifacts and may be retained outside the runtime cache.
+candidate binary hash and receipts, then compares the live stock/hint schemas
+with each other and the saved selfcheck. Any mismatch fails boot with exit78
+through sitecustomize. The fixed runtime library is
+`/overlay/l2hint-serving/candidate/marlin.so` on the read-only overlay; never
+pre-create `/cache`, which the launcher creates fresh. The other logs/reference binary are
+diagnostic artifacts and may be retained outside the runtime overlay.
 
 Mac CPU checks:
 
@@ -102,3 +118,43 @@ failure, restoration failure or numerical mismatch is KILL. Never reuse the
 synthetic consumer saving as a serving estimate. Fleet numerics/performance,
 extra graph memory, schema loading with the real driver and down-kernel
 byte equality remain unverified until the coordinator runs the B window.
+
+## Single-bank cross-boot panel
+
+At identical full context/KV/layout/guards, collect one panel per boot:
+
+```bash
+python3 -B bench/l2hint_crossboot.py collect --mode off --boot baseline \
+  --endpoint http://127.0.0.1:8095 --out NEW_BASELINE_DIRECTORY
+python3 -B bench/l2hint_crossboot.py collect --mode on --boot candidate \
+  --endpoint http://127.0.0.1:8095 --out NEW_CANDIDATE_DIRECTORY \
+  --reference NEW_BASELINE_DIRECTORY/panel.json
+python3 -B bench/l2hint_crossboot.py collect --mode off --boot control \
+  --endpoint http://127.0.0.1:8095 --out NEW_CONTROL_DIRECTORY \
+  --reference NEW_BASELINE_DIRECTORY/panel.json
+python3 -B bench/l2hint_crossboot.py compare NEW_BASELINE_DIRECTORY/panel.json \
+  NEW_CANDIDATE_DIRECTORY/panel.json NEW_CONTROL_DIRECTORY/panel.json \
+  --out NEW_COMPARISON.json
+```
+
+The coordinator owns stop/boot/recovery, exclusive traffic and admission.
+Each collection reuses cycle prompts, l2hint_aba's seed0/512-token stream and
+GateMetrics, resets APC for scored c1 prompts, discards one warmup and retains
+actual IDs plus raw metrics. Mode/boot names are operator labels, so bind them
+to DRY vectors, per-rank boot logs and the coordinator's admission receipts.
+No collection calls a runtime switch or graph RPC. Candidate and control
+stop on the first mismatched token/text/finish/count or input/timing metadata.
+Comparison requires 20 unique pairs per boot, three distinct boot labels,
+OFF/ON/OFF order, both prose/code mean saving >=0.3 ms/cycle, mean-3SE >0 and
+median control drift <=1%. It reuses the A/B evaluator and gate_metrics.paired.
+
+Run the existing `bench/t0_probe.py --apc-warm --det-align ON` on each boot
+and explicitly check COMPLETE plus 30 eligible/identical rows, zero divergence
+and identical warm request/output sequences across boots. Its built-in
+`det_align_on_cold_pass` is deliberately not a warm-mode verdict; exit0 alone
+is insufficient. Require actual IDs as an additional cross-boot c1 gate.
+
+All cycle numbers here are **request decode wall / draft opportunities**,
+not GPU-event cycle medians. No profiler, CUPTI or device instrumentation is
+used. Any additional device timing must use CUDA events only; the display
+memory lender and monitor must remain running with their existing guards.
