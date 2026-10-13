@@ -77,15 +77,16 @@ def options(env=None):
         raise ValueError('attention front piece switches must be 0 or 1')
     if not any(v=='1' for v in flags):
         raise ValueError('attention front requires at least one piece')
+    # On by default in the release profile: any other layout keeps the stock path (no hooks), never an error.
     if env.get('GLM_ATTN_WEIGHTS')!='nvfp4' or env.get('GLM_KV_FORMAT')!='fp4x' or env.get('GLM_FULL_MLA')!='triton':
-        raise ValueError('attention front requires release NVFP4/FP4x/Triton MLA')
+        return None
     for key in ('GLM_NVFP4_MERGED','GLM_FP4_RECENT_WINDOW','GLM_FP4_RECENT_AB','GLM_NVFP4_WSIM'):
         if env.get(key,'0') not in ('','0'):
-            raise ValueError('attention front does not compose with '+key)
+            return None
     if flags[1]=='1' and env.get('VLLM_BATCH_INVARIANT','0') not in ('','0'):
-        raise ValueError('attention front stock norms require batch-invariant OFF')
+        return None
     if env.get('VLLM_MARLIN_USE_ATOMIC_ADD','0') not in ('','0'):
-        raise ValueError('attention front requires stock deterministic FP32 Marlin reduction')
+        return None
     return tuple(v=='1' for v in flags)
 
 

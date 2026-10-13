@@ -1282,8 +1282,12 @@ def main():
         if ENV.get('GLM_ATTN_FRONT_FUSE', '0') != '0':
             sys.path.insert(0, str(ROOT / 'overlay/bringup'))
             from glm_attnfront import options
-            if options(ENV)[1]:
+            selected = options(ENV)
+            if selected and selected[1]:
                 native = ROOT / 'overlay/bringup/attnfront_native'
+                if not (native / 'build/build.json').is_file() or not (native / 'build/attnfront.so').is_file():
+                    raise RuntimeError('GLM_ATTN_FRONT_FUSE=1 needs a local build: run ./start.sh attnfront-setup once '
+                                       '(or set GLM_ATTN_FRONT_FUSE=0)')
                 receipt = json.loads((native / 'build/build.json').read_text())
                 from attnfront_native.build import sources
                 if receipt['sources'] != sources() or receipt['binary_sha256'] != hashlib.sha256((native / 'build/attnfront.so').read_bytes()).hexdigest():

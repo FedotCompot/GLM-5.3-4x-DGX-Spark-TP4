@@ -189,5 +189,5 @@ The fused RoPE writer follows vLLM contributors' `apply_token_rotary_embedding`
 and knapcio's released FP4x writer. Original Apache-2.0 sources and notices are
 retained under `overlay/bringup/attnfront_native/vendor`, with hashes and commit
 in `BASE.json`. NVIDIA CUB remains a toolchain dependency under its original
-license. The launch-elimination idea is from the workspace's fable ideas 1A/7;
+license. Launch elimination and the integration are by knapcio;
 no upstream fused-Q/K Triton norm arithmetic is adopted.
