@@ -192,6 +192,7 @@ Fill the four hosts, fabric addresses, image IDs, paths and NCCL hashes before l
 cp .env.example .env
 bash overlay/guard/build_guard.sh
 ./start.sh l2hint-setup          # once: builds the L2-hinted Marlin MoE variant (or set GLM_MARLIN_L2HINT=off)
+./start.sh attnfront-setup       # once: builds the exact attention-front kernels (or set GLM_ATTN_FRONT_FUSE=0)
 DRY=1 ./start.sh serve
 ./start.sh preflight
 ./start.sh serve
