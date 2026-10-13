@@ -121,7 +121,8 @@ class Policy(unittest.TestCase):
     def test_options(self):
         self.assertEqual(R.options(dict(GLM_INDEXER_ROW_SHARD='1',VLLM_SERVER_DEV_MODE='1')),('off','nccl'))
         with self.assertRaises(ValueError): R.options({'GLM_INDEXER_ROW_SHARD':'yes'})
-        with self.assertRaises(ValueError): R.options({'GLM_INDEXER_ROW_SHARD':'1'})
+        # The launcher enables the private worker RPCs itself; options no longer require it in the site env.
+        self.assertEqual(R.options({'GLM_INDEXER_ROW_SHARD':'1'}),('off','nccl'))
         with self.assertRaises(ValueError): R.options({'GLM_INDEXER_ROW_SHARD_TRANSPORT':'auto'})
 
     def test_gate_2048_4096_and_depth(self):

@@ -12,3 +12,4 @@ qeval-*.json
 tests/memory-results.json
 image-source/
 overlay/guard/*.so
+overlay/l2hint-serving/

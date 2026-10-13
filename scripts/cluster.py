@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,7 +29,8 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
                     'GLM_MTP_ROWSELECT', 'GLM_DRAFT_EHPROJ', 'GLM_DRAFT_EHPROJ_INIT',
                     'GLM_DRAFT_HEAD', 'GLM_DRAFT_HEAD_INIT', 'GLM_DECODE_FAIR',
                     'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL', 'GLM_DECODE_FAIR_REARM',
-                    'GLM_MOE_DET_ALIGN')]
+                    'GLM_MOE_DET_ALIGN', 'GLM_INDEXER_STABLE_TOPK', 'GLM_INDEXER_ROW_SHARD',
+                    'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_MARLIN_L2HINT')]
 GiB = 1 << 30
 HEALTH_POLL_S = 1          # loopback /health while booting
 SAMPLE_BOOT_S = 5          # rank samples (memory floors, admission window) while booting
@@ -345,7 +347,7 @@ def optional_env():
     if row_options is not None:
         row_mode, row_transport = row_options
         env.update(GLM_INDEXER_ROW_SHARD='1', GLM_INDEXER_ROW_SHARD_INIT=row_mode,
-                   GLM_INDEXER_ROW_SHARD_TRANSPORT=row_transport)
+                   GLM_INDEXER_ROW_SHARD_TRANSPORT=row_transport, VLLM_SERVER_DEV_MODE='1')
         for key in ('GLM_INDEXER_ROW_SHARD_MODE', 'GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY'):
             if key in ENV and ENV[key] != '':
                 env[key] = ENV[key]
@@ -1180,6 +1182,34 @@ def serve(ctn):
     monitor(deployment, boot=True)
 
 
+L2HINT_FILES = ('candidate/marlin.so', 'candidate/build.json', 'assembly.json', 'selfcheck.json')
+
+
+def l2hint_installed():
+    """GLM_MARLIN_L2HINT=on/AB loads a locally built Marlin variant from the overlay; refuse to boot without it."""
+    if ENV.get('GLM_MARLIN_L2HINT', 'off') == 'off' and ENV.get('GLM_MARLIN_L2HINT_AB', '0') == '0':
+        return
+    missing = [f for f in L2HINT_FILES if not (ROOT / 'overlay/l2hint-serving' / f).is_file()]
+    if missing:
+        raise RuntimeError('GLM_MARLIN_L2HINT needs a local build: run ./start.sh l2hint-setup once '
+                           '(or set GLM_MARLIN_L2HINT=off); missing overlay/l2hint-serving/' + ', '.join(missing))
+
+
+def l2hint_setup():
+    """Build the L2-hinted Marlin MoE variant in the pinned image (no GPU, no network) and install it."""
+    out = ROOT / 'logs' / ('l2hint-build-' + time.strftime('%Y%m%d-%H%M%S'))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['bash', str(ROOT / 'scripts/build_marlin_l2hint.sh'), str(out)], check=True)
+    dest = ROOT / 'overlay/l2hint-serving'
+    if dest.exists():
+        dest.rename(out.parent / ('l2hint-serving.prev-' + time.strftime('%Y%m%d-%H%M%S')))  # keep the overlay clean
+    for f in L2HINT_FILES:
+        (dest / f).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(out / f, dest / f)
+    for f in L2HINT_FILES:
+        print(hashlib.sha256((dest / f).read_bytes()).hexdigest(), 'overlay/l2hint-serving/' + f, flush=True)
+
+
 def main():
     validate()
     launch_switches()
@@ -1215,10 +1245,14 @@ def main():
             raise ValueError('dispram-setup needs RECIPE_DISPRAM=1/auto or require')
         hook.setup(HOSTS, ENV, ROOT)
         return
+    if command == 'l2hint-setup':
+        l2hint_setup()
+        return
     if command == 'preflight':
         preflight(ctn)
         return
     if command == 'serve':
+        l2hint_installed()
         if kstop_note():
             print(kstop_note(), flush=True)
         print(floors, flush=True)

@@ -79,7 +79,9 @@ def sample_interval(value):
 
 
 def configured_mode(env):
-    mode = env.get('GLM_INDEXER_ROW_SHARD_MODE', env.get('GLM_INDEXER_ROW_SHARD_INIT', 'off'))
+    # Release default: FAST when the stable selector it requires is on, else OFF (probe modes are explicit).
+    default = 'fast' if env.get('GLM_INDEXER_STABLE_TOPK') == '1' else 'off'
+    mode = env.get('GLM_INDEXER_ROW_SHARD_MODE', env.get('GLM_INDEXER_ROW_SHARD_INIT', default))
     mode = 'check' if mode == 'checked' else mode
     initial = env.get('GLM_INDEXER_ROW_SHARD_INIT', 'off')
     initial = 'check' if initial == 'checked' else initial
@@ -103,8 +105,7 @@ def options(env):
     transport = env.get('GLM_INDEXER_ROW_SHARD_TRANSPORT', 'nccl')
     if mode not in ('off', 'self', 'check', 'fast') or transport not in ('nccl', 'auto'):
         raise ValueError('row-shard MODE=off/self/check/fast, TRANSPORT=nccl/auto')
-    if env.get('VLLM_SERVER_DEV_MODE') != '1':
-        raise ValueError('row-shard probe requires private worker collective RPCs')
+    # The launcher enables the private worker RPCs (status/switch) itself, as for the draft head.
     sample_interval(env.get('GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY', '32'))
     if mode == 'fast' and env.get('GLM_INDEXER_STABLE_TOPK') != '1':
         raise ValueError('FAST requires GLM_INDEXER_STABLE_TOPK=1')

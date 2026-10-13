@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 import tempfile
 import shlex
+import subprocess
 import json
 import threading
 import unittest
@@ -1063,3 +1064,32 @@ class StackDefaults(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
+
+
+class Release1013Defaults(unittest.TestCase):
+    """Profile defaults 2026-10-13: stable top-k + FAST row shard, L2 hints (local build), re-arm complete."""
+    def test_profile_defaults(self):
+        text = (ROOT/'profiles/current.env').read_text()
+        for line in ('export GLM_DECODE_FAIR_REARM="${GLM_DECODE_FAIR_REARM:-complete}"',
+                     'export GLM_INDEXER_STABLE_TOPK="${GLM_INDEXER_STABLE_TOPK:-1}"',
+                     'export GLM_INDEXER_ROW_SHARD="${GLM_INDEXER_ROW_SHARD:-1}"',
+                     'export GLM_MARLIN_L2HINT="${GLM_MARLIN_L2HINT:-on}"'):
+            self.assertIn(line, text)
+        self.assertNotIn('export GLM_INDEXER_ROW_SHARD_INIT', text)  # mode follows the stable selector
+
+    def test_row_shard_enables_private_rpcs(self):
+        with patch.dict(C.ENV, {'GLM_INDEXER_ROW_SHARD': '1', 'GLM_INDEXER_STABLE_TOPK': '1'}):
+            env = C.optional_env()
+        self.assertEqual((env['GLM_INDEXER_ROW_SHARD_INIT'], env['VLLM_SERVER_DEV_MODE']), ('fast', '1'))
+
+    def test_l2hint_needs_local_build(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(C, 'ROOT', Path(d)):
+            with patch.dict(C.ENV, {'GLM_MARLIN_L2HINT': 'on'}):
+                with self.assertRaisesRegex(RuntimeError, 'l2hint-setup'):
+                    C.l2hint_installed()
+            with patch.dict(C.ENV, {'GLM_MARLIN_L2HINT': 'off', 'GLM_MARLIN_L2HINT_AB': '0'}):
+                C.l2hint_installed()
+            for f in C.L2HINT_FILES:
+                p = Path(d)/'overlay/l2hint-serving'/f; p.parent.mkdir(parents=True, exist_ok=True); p.write_text('x')
+            with patch.dict(C.ENV, {'GLM_MARLIN_L2HINT': 'on'}):
+                C.l2hint_installed()
