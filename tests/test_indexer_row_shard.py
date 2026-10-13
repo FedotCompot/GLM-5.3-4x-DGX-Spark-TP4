@@ -139,9 +139,78 @@ class Policy(unittest.TestCase):
         with patch.object(R,'MODE','off'): self.assertFalse(R.eligible(4096,129000))
 
     def test_runtime_selection(self):
-        with patch.object(R,'REGISTERED',True),patch.object(R,'MODE','off'):
+        with patch.object(R,'REGISTERED',True),patch.object(R,'MODE','off'),patch.object(R,'FAILED',False):
             for mode in ('self','check','off'): self.assertEqual(R.set_mode(mode)['mode'],mode)
-            with self.assertRaises(ValueError): R.set_mode('fast')
+            with self.assertRaises(RuntimeError): R.set_mode('fast')
+
+
+class FastPolicy(unittest.TestCase):
+    def test_boot_guard_alias_interval_and_conflict(self):
+        env = dict(GLM_INDEXER_ROW_SHARD='1',VLLM_SERVER_DEV_MODE='1',
+                   GLM_INDEXER_ROW_SHARD_MODE='fast')
+        for flag in ('0','', 'yes'):
+            with self.assertRaises(ValueError): R.options(dict(env,GLM_INDEXER_STABLE_TOPK=flag))
+        self.assertEqual(R.options(dict(env,GLM_INDEXER_STABLE_TOPK='1')),('fast','nccl'))
+        self.assertEqual(R.options(dict(env,GLM_INDEXER_ROW_SHARD_MODE='checked')),('check','nccl'))
+        self.assertEqual(R.options(dict(env,GLM_INDEXER_ROW_SHARD_MODE='checked',
+                                        GLM_INDEXER_ROW_SHARD_INIT='check')),('check','nccl'))
+        for bad in ('-1','1.5','yes',True):
+            with self.assertRaises(ValueError): R.sample_interval(bad)
+        for n in ('0','1','32',128): self.assertEqual(R.sample_interval(n),int(n))
+        with self.assertRaises(ValueError): R.options(dict(env,GLM_INDEXER_ROW_SHARD_INIT='self'))
+        with self.assertRaises(ValueError): R.options({'GLM_INDEXER_ROW_SHARD_MODE':'fast'})
+
+    def test_runtime_install_guard(self):
+        import glm_indexer_stable_topk as S
+        with patch.object(R,'HAS_FP4X',True),patch.object(R,'FAILED',False),\
+             patch.object(S,'REGISTERED',True),patch.object(S,'INSTALLED',True):
+            R.require_fast(S.top_k_per_row_prefill)
+            with self.assertRaises(RuntimeError): R.require_fast(lambda:None)
+            with patch.object(S,'INSTALLED',False),self.assertRaises(RuntimeError): R.require_fast()
+            with patch.object(S,'REGISTERED',False),self.assertRaises(RuntimeError): R.require_fast()
+            with patch.object(R,'HAS_FP4X',False),self.assertRaises(RuntimeError): R.require_fast()
+            with patch.object(R,'FAILED',True),self.assertRaises(RuntimeError): R.require_fast()
+
+    def test_sampling_first_periodic_disable_and_rearm(self):
+        with patch.object(R,'REGISTERED',True),patch.object(R,'FAILED',False),\
+             patch.object(R,'MODE','off'),patch.object(R,'FAST_CHUNKS',0),\
+             patch.object(R,'SAMPLE_EVERY',32),patch.object(R,'require_fast'):
+            R.set_mode('fast',3)
+            self.assertEqual([R.checked_call(None) for _ in range(8)],
+                             [True,False,False,True,False,False,True,False])
+            R.set_mode('off'); R.set_mode('fast')
+            self.assertTrue(R.checked_call(None))
+            R.set_mode('fast',0)
+            self.assertFalse(any(R.checked_call(None) for _ in range(100)))
+            with patch.object(R,'FAILED',True):
+                for mode in ('off','fast','check'):
+                    with self.assertRaises(ValueError): R.set_mode(mode)
+
+    def test_timing_deferred_until_status(self):
+        calls=[]
+        class Event:
+            def synchronize(self): calls.append('sync')
+            def elapsed_time(self,other): return 2.5
+        pending=[('owner',Event(),Event()),('gather',Event(),Event())]
+        with patch.object(R,'PENDING_TIMINGS',pending),patch.object(R,'PHASE_MS',dict.fromkeys(R.PHASE_MS,0)):
+            R.flush_timings()
+            self.assertEqual(calls,['sync'])
+            self.assertEqual(R.PHASE_MS,dict(owner=2.5,gather=2.5,reference=0,equality=0))
+            R.flush_timings(); self.assertEqual(calls,['sync'])
+
+    def test_nonblocking_event_reap_keeps_unready_tail(self):
+        calls=[]
+        class Event:
+            def __init__(self,ready): self.ready=ready
+            def query(self): return self.ready
+            def synchronize(self): raise AssertionError('FAST must not synchronize')
+            def elapsed_time(self,other): return 1
+        pending=[('owner',Event(True),Event(True)),('gather',Event(False),Event(False))]
+        with patch.object(R,'PENDING_TIMINGS',pending),patch.object(R,'PHASE_MS',dict.fromkeys(R.PHASE_MS,0)):
+            R.flush_timings(wait=False)
+            self.assertEqual(len(pending),1)
+            self.assertEqual(R.PHASE_MS['owner'],1)
+            self.assertEqual(R.PHASE_MS['gather'],0)
 
 
 class Source(unittest.TestCase):

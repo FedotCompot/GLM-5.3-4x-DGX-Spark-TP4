@@ -42,6 +42,23 @@ class Launcher(unittest.TestCase):
                     self.assertEqual(selected[key],profile[key])
         with patch.dict(C.ENV,dict(profile,GLM_INDEXER_ROW_SHARD_INIT='fast')),self.assertRaises(ValueError):
             C.optional_env()
+        fast=dict(profile,GLM_INDEXER_ROW_SHARD_MODE='fast',GLM_INDEXER_STABLE_TOPK='1',
+                  GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY='0')
+        with patch.dict(C.ENV,fast):
+            for rank in range(4):
+                selected=C.rank_env(rank)
+                for key in ('GLM_INDEXER_ROW_SHARD_MODE','GLM_INDEXER_STABLE_TOPK','GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY'):
+                    self.assertEqual(selected[key],fast[key])
+
+    def test_fast_controls_reach_all_ranks_and_require_stable(self):
+        values=dict(GLM_INDEXER_ROW_SHARD='1',GLM_INDEXER_ROW_SHARD_MODE='fast',
+                    GLM_INDEXER_STABLE_TOPK='1',GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY='0',
+                    VLLM_SERVER_DEV_MODE='1')
+        with patch.dict(C.ENV,values):
+            actual=C.optional_env()
+            for key,value in values.items(): self.assertEqual(actual[key],value)
+        with patch.dict(C.ENV,dict(values,GLM_INDEXER_STABLE_TOPK='0')),self.assertRaises(ValueError):
+            C.optional_env()
 
     def test_draft_head_initial_on_all_ranks(self):
         profile={key:'v-'+key for key in C.PROFILE_KEYS}

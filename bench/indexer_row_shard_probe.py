@@ -38,8 +38,8 @@ def main():
     def post(path, body=None): return request(path, {} if body is None else body)
     def rpc(method,args=()):
         result = post('/collective_rpc',dict(method=method,args=list(args)))['results']
-        if len(result) != 4 or not all(x['armed'] and x['checked_only'] for x in result):
-            raise RuntimeError('all four workers must be armed checked-only')
+        if len(result) != 4 or not all(x['armed'] for x in result):
+            raise RuntimeError('all four workers must be armed')
         return result
     def select(mode):
         result = rpc('indexer_row_shard_set',[mode])

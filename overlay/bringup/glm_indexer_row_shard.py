@@ -2,8 +2,8 @@
 """Default-off TP row ownership probe for pinned full GLM DSA prefill.
 
 Inspired by vLLM #54951/#54394 (Apache-2.0 contributors). No upstream
-implementation is copied. Checked-only: stock atomic top-k cannot promise
-byte-identical tie order. Never expose an unchecked serving mode.
+implementation is copied. FAST requires the installed stable selector and
+original FP4x scorer tiles; sampled raw equality fails closed.
 """
 import ast
 import functools
@@ -21,30 +21,72 @@ PINS = {
 MODE = 'off'
 TRANSPORT = 'nccl'
 REGISTERED = False
-COUNTS = dict(chunks=0, rows=0, checked=0, mismatches=0, payload_bytes=0)
+HAS_FP4X = False
+FAILED = False
+SAMPLE_EVERY = 32
+FAST_CHUNKS = 0
+PENDING_TIMINGS = []
+COUNTS = dict(chunks=0, rows=0, checked=0, mismatches=0, payload_bytes=0, fast_chunks=0, sampled=0)
 PHASE_MS = dict(owner=0.0, gather=0.0, reference=0.0, equality=0.0)
 
 
 class Timing:
-    """CUDA stream events, read only after equality's mandatory sync."""
+    """CUDA events only. Read at drained status RPC, never sync FAST chunks."""
     def __init__(self, tensor):
         self.events = []
         self.enabled = tensor.is_cuda
-        self.mark()
-
-    def mark(self):
         if self.enabled:
-            import torch
-            event = torch.cuda.Event(enable_timing=True)
-            event.record()
-            self.events.append(event)
+            self.previous = self.event()
+
+    @staticmethod
+    def event():
+        import torch
+        event = torch.cuda.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def mark(self, phase):
+        if self.enabled:
+            event = self.event()
+            self.events.append((phase, self.previous, event))
+            self.previous = event
 
     def finish(self):
         if self.enabled:
-            # Equality's .item() synchronizes; ensure the trailing event too.
-            self.events[-1].synchronize()
-            for name, a, b in zip(PHASE_MS, self.events, self.events[1:]):
-                PHASE_MS[name] += a.elapsed_time(b)
+            PENDING_TIMINGS.extend(self.events)
+            if len(PENDING_TIMINGS) >= 256:
+                flush_timings(wait=False)
+
+
+def flush_timings(wait=True):
+    # Coordinator drains requests before calling status or switching policy.
+    if PENDING_TIMINGS:
+        if wait:
+            PENDING_TIMINGS[-1][2].synchronize()
+        completed = 0
+        for name, a, b in PENDING_TIMINGS:
+            if not wait and not b.query():
+                break
+            PHASE_MS[name] += a.elapsed_time(b)
+            completed += 1
+        del PENDING_TIMINGS[:completed]
+
+
+def sample_interval(value):
+    if isinstance(value, bool) or not str(value).isdigit():
+        raise ValueError('row-shard SAMPLE_EVERY must be a nonnegative integer')
+    return int(value)
+
+
+def configured_mode(env):
+    mode = env.get('GLM_INDEXER_ROW_SHARD_MODE', env.get('GLM_INDEXER_ROW_SHARD_INIT', 'off'))
+    mode = 'check' if mode == 'checked' else mode
+    initial = env.get('GLM_INDEXER_ROW_SHARD_INIT', 'off')
+    initial = 'check' if initial == 'checked' else initial
+    if ('GLM_INDEXER_ROW_SHARD_MODE' in env and 'GLM_INDEXER_ROW_SHARD_INIT' in env
+            and initial not in ('', 'off', mode)):
+        raise ValueError('conflicting row-shard MODE and INIT')
+    return mode
 
 
 def options(env):
@@ -53,15 +95,19 @@ def options(env):
         raise ValueError('GLM_INDEXER_ROW_SHARD must be 0 or 1')
     if flag == '0':
         if any(env.get(k, '0') not in ('', '0') for k in (
-                'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_INDEXER_ROW_SHARD_TRANSPORT')):
+                'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_INDEXER_ROW_SHARD_TRANSPORT',
+                'GLM_INDEXER_ROW_SHARD_MODE', 'GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY')):
             raise ValueError('row-shard options require GLM_INDEXER_ROW_SHARD=1')
         return None
-    mode = env.get('GLM_INDEXER_ROW_SHARD_INIT', 'off')
+    mode = configured_mode(env)
     transport = env.get('GLM_INDEXER_ROW_SHARD_TRANSPORT', 'nccl')
-    if mode not in ('off', 'self', 'check') or transport not in ('nccl', 'auto'):
-        raise ValueError('row-shard INIT=off/self/check, TRANSPORT=nccl/auto')
+    if mode not in ('off', 'self', 'check', 'fast') or transport not in ('nccl', 'auto'):
+        raise ValueError('row-shard MODE=off/self/check/fast, TRANSPORT=nccl/auto')
     if env.get('VLLM_SERVER_DEV_MODE') != '1':
         raise ValueError('row-shard probe requires private worker collective RPCs')
+    sample_interval(env.get('GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY', '32'))
+    if mode == 'fast' and env.get('GLM_INDEXER_STABLE_TOPK') != '1':
+        raise ValueError('FAST requires GLM_INDEXER_STABLE_TOPK=1')
     return mode, transport
 
 
@@ -122,16 +168,47 @@ def eligible(rows, depth, *, world=4, capture=False, pcp=False, dcp=1,
 
 
 def status():
+    flush_timings()
     return dict(armed=REGISTERED, mode=MODE, transport=TRANSPORT,
-                checked_only=True, phase_ms=dict(PHASE_MS), **COUNTS)
+                checked_only=False, fast_supported=HAS_FP4X, failed=FAILED,
+                sample_every=SAMPLE_EVERY, fast_sequence=FAST_CHUNKS,
+                phase_ms=dict(PHASE_MS), **COUNTS)
 
 
-def set_mode(mode):
-    global MODE
-    if not REGISTERED or mode not in ('off', 'self', 'check'):
-        raise ValueError('armed row-shard probe accepts off/self/check only')
-    MODE = mode
+def require_fast(topk_fn=None):
+    import glm_indexer_stable_topk as stable
+    if (FAILED or not HAS_FP4X or not stable.REGISTERED or not stable.INSTALLED
+            or (topk_fn is not None and topk_fn is not stable.top_k_per_row_prefill)):
+        raise RuntimeError('FAST requires installed GLM_INDEXER_STABLE_TOPK=1, FP4x, and no prior failure')
+
+
+def set_mode(mode, sample_every=None):
+    global MODE, SAMPLE_EVERY, FAST_CHUNKS
+    mode = 'check' if mode == 'checked' else mode
+    if not REGISTERED or mode not in ('off', 'self', 'check', 'fast') or FAILED:
+        raise ValueError('armed healthy row-shard accepts off/self/check/fast only')
+    interval = SAMPLE_EVERY if sample_every is None else sample_interval(sample_every)
+    if mode == 'fast':
+        require_fast()
+    flush_timings()
+    if mode != MODE or interval != SAMPLE_EVERY:
+        FAST_CHUNKS = 0
+    MODE, SAMPLE_EVERY = mode, interval
     return status()
+
+
+def checked_call(topk_fn):
+    global FAST_CHUNKS
+    if MODE != 'fast':
+        return True
+    require_fast(topk_fn)
+    # First eligible call after each policy transition, then every N calls.
+    check = SAMPLE_EVERY > 0 and FAST_CHUNKS % SAMPLE_EVERY == 0
+    FAST_CHUNKS += 1
+    COUNTS['fast_chunks'] += 1
+    if check:
+        COUNTS['sampled'] += 1
+    return check
 
 
 def gather(local, slices, group):
@@ -162,12 +239,14 @@ def require_equal(candidate, reference, group):
     Compare raw order and -1 tails, never sorted sets or score multisets.
     No prompts, activations or indices are written to disk.
     """
+    global FAILED
     import torch
     import torch.distributed as dist
     bad = (candidate != reference).any().to(dtype=torch.int32).reshape(1)
     dist.all_reduce(bad, op=dist.ReduceOp.MAX, group=group.device_group)
     COUNTS['checked'] += 1
     if int(bad.item()):
+        FAILED = True
         COUNTS['mismatches'] += 1
         sys.stderr.write('glm-indexer-row-shard: INDEX_ORDER_MISMATCH ' + str(status()) + '\n')
         raise RuntimeError('row-shard raw top-k index equality failed; kill this candidate')
@@ -185,27 +264,29 @@ def score_rows(q, scale, keys, key_scale, weights, starts, ends, out, logits_fn,
     if not eligible(out.shape[0] if scheduled_rows is None else scheduled_rows, depth, world=group.world_size,
                     capture=torch.cuda.is_current_stream_capturing()):
         return score(q, scale, keys, key_scale, weights, starts, ends, out, logits_fn, topk_fn)
+    if MODE == 'fast':
+        raise RuntimeError('FAST requires original FP4x tile geometry')
     slices = partition(out.shape[0], group.world_size)
     timer = Timing(q)
     if MODE == 'self':
         candidate = torch.full_like(out, -1)
         score(q, scale, keys, key_scale, weights, starts, ends, candidate, logits_fn, topk_fn)
-        timer.mark()
+        timer.mark('owner')
     else:
         begin, end = slices[group.rank_in_group]
         local = torch.full((end - begin, out.shape[1]), -1, dtype=out.dtype, device=out.device)
         if end > begin:
             score(q[begin:end], None if scale is None else scale[begin:end], keys, key_scale,
                   weights[begin:end], starts[begin:end], ends[begin:end], local, logits_fn, topk_fn)
-        timer.mark()
+        timer.mark('owner')
         candidate = gather(local, slices, group)
-    timer.mark()
+    timer.mark('gather')
     # The reference is exactly the original full-row scorer/selector; query
     # projection, key insertion/gather, mixed decode and DCP remain outside.
     score(q, scale, keys, key_scale, weights, starts, ends, out, logits_fn, topk_fn)
-    timer.mark()
+    timer.mark('reference')
     require_equal(candidate, out, group)
-    timer.mark()
+    timer.mark('equality')
     timer.finish()
     COUNTS['chunks'] += 1
     COUNTS['rows'] += out.shape[0]
@@ -288,24 +369,29 @@ def tiled_prefill(cache, q, q_scale, weights, chunks, out, logits_fn, topk_fn=No
                   dest[written:written+count], logits_fn, topk_fn)
             written += count
 
+    check = checked_call(topk_fn)
     timer = Timing(q)
     if MODE == 'self':
         candidate = torch.full((rows, p.TOPK), -1, dtype=out.dtype, device=out.device)
         run(0, len(tasks), candidate)
-        timer.mark()
+        timer.mark('owner')
     else:
         first, last = owners[group.rank_in_group]
         begin, end = slices[group.rank_in_group]
         local = torch.full((end-begin, p.TOPK), -1, dtype=out.dtype, device=out.device)
         run(first, last, local)
-        timer.mark()
+        timer.mark('owner')
         candidate = gather(local, slices, group)
-    timer.mark()
+    timer.mark('gather')
     reference = out[chunks[0].token_start:chunks[-1].token_end, :p.TOPK]
-    p._row_shard_stock(cache, q, q_scale, weights, chunks, out, logits_fn, topk_fn)
-    timer.mark()
-    require_equal(candidate, reference, group)
-    timer.mark()
+    if check:
+        p._row_shard_stock(cache, q, q_scale, weights, chunks, out, logits_fn, topk_fn)
+        timer.mark('reference')
+        require_equal(candidate, reference, group)
+        timer.mark('equality')
+    if MODE == 'fast':
+        # Publish only after a sampled all-rank equality vote has passed.
+        reference.copy_(candidate)
     timer.finish()
     COUNTS['chunks'] += 1
     COUNTS['rows'] += rows
@@ -317,10 +403,14 @@ def pin(mod):
 
 
 def install_sparse(mod):
+    global HAS_FP4X
     pin(mod)
     cls = mod.SparseAttnIndexer
     original, original_init = cls.forward_cuda, cls.__init__
     fp4x = getattr(mod, '_glm_fp4x_installed', False)
+    HAS_FP4X = fp4x
+    if MODE == 'fast' and not fp4x:
+        raise RuntimeError('FAST requires original FP4x tile geometry')
     if fp4x:
         import glm_fp4_prefill as p
         p._row_shard_stock = p.tiled_prefill
@@ -354,6 +444,8 @@ def install_sparse(mod):
     @functools.wraps(original)
     def forward(self, hidden_states, q_quant, k, weights):
         import torch
+        if FAILED:
+            raise RuntimeError('row-shard latched failure; kill this candidate')
         context = mod.get_forward_context()
         md = context.attn_metadata
         layer = md.get(self.k_cache.prefix) if isinstance(md, dict) else None
@@ -375,13 +467,13 @@ def install_sparse(mod):
                          self.use_fp4_cache, self.dcp_rank, self.dcp_world_size,
                          self.cp_kv_cache_interleave_size)
     cls.__init__, cls.forward_cuda = init, forward
-    sys.stderr.write('glm-indexer-row-shard: armed checked-only fp4x=' + str(fp4x) + '\n')
+    sys.stderr.write('glm-indexer-row-shard: armed fp4x=' + str(fp4x) + '\n')
 
 
 def install_worker(mod):
     pin(mod)
-    def row_shard_set(self, mode):
-        return dict(rank=int(os.environ.get('RANK', '-1')), **set_mode(mode))
+    def row_shard_set(self, mode, sample_every=None):
+        return dict(rank=int(os.environ.get('RANK', '-1')), **set_mode(mode, sample_every))
     def row_shard_status(self):
         return dict(rank=int(os.environ.get('RANK', '-1')), **status())
     mod.Worker.indexer_row_shard_set = row_shard_set
@@ -389,13 +481,14 @@ def install_worker(mod):
 
 
 def register(env=None):
-    global MODE, TRANSPORT, REGISTERED
+    global MODE, TRANSPORT, REGISTERED, SAMPLE_EVERY
     config = options(os.environ if env is None else env)
     if config is None:
         return False
     if REGISTERED:
         raise RuntimeError('row-shard already armed')
     MODE, TRANSPORT = config
+    SAMPLE_EVERY = sample_interval((os.environ if env is None else env).get('GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY', '32'))
     # Register last, outside the short-DSA / Kstop / FP4x source loaders.
     from glm_glue_lite import after_import
     after_import(SPARSE, install_sparse)

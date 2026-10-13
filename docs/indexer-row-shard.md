@@ -1,28 +1,36 @@
-# Checked TP indexer row ownership (queue #39)
+# TP indexer row ownership (queue #39)
 
 Default OFF: `GLM_INDEXER_ROW_SHARD=0` or unset. OFF installs no hook and
 adds no Docker environment argument. The base is vLLM g487ecf187 plus the
 release overlay. Credit: vLLM #54951/#54394 contributors (Apache-2.0), idea
 adapted independently from the offline survey; no external source vendored.
 
-**Status: diagnostic port, performance promotion blocked by stock tie order.**
-`docs/fp4-kv.md` records stock prefill cutoff selection through unordered
-atomics. Reusing the same selector does not prove byte equality between
-invocations or ranks. This implementation therefore offers no unchecked ON
-mode. It cannot honestly deliver an accelerated path that is exact by
-construction against this baseline. Sorting or a stable selector would change
-the released path and is outside this patch.
+**Status: FAST prototype over stable top-k; fleet FAST qualification pending.**
+The coordinator's boot f summary reports 264 checked chunks, zero raw
+mismatches, at nominal 35K/95K/129K. These historical results qualify the
+geometry for the requested accelerated experiment, not its new code or speed.
+Stock atomic cutoff tie order remains nondeterministic. FAST therefore refuses
+without the installed `GLM_INDEXER_STABLE_TOPK=1` selector. The comparison
+baseline is stable replicated OFF, not historical stock selection.
 
 Boot controls (all ranks identical):
 
 ```bash
 GLM_INDEXER_ROW_SHARD=1
-GLM_INDEXER_ROW_SHARD_INIT=off
+GLM_INDEXER_ROW_SHARD_MODE=off
+GLM_INDEXER_ROW_SHARD_SAMPLE_EVERY=32
+GLM_INDEXER_STABLE_TOPK=1
 GLM_INDEXER_ROW_SHARD_TRANSPORT=nccl
 VLLM_SERVER_DEV_MODE=1
 ```
 
-Private collective RPC `indexer_row_shard_set` accepts `off`, `self`, `check`.
+Private collective RPC `indexer_row_shard_set(mode, sample_every=None)` accepts
+`off`, `self`, `check` (`checked` alias), `fast`. `MODE` replaces the legacy
+`INIT` selector; conflicting non-OFF INIT values are rejected. Arming remains
+explicit with `GLM_INDEXER_ROW_SHARD=1`. Unset controls stay OFF.
+`GLM_INDEXER_ROW_SHARD_MODE=fast` selects FAST at boot; starting OFF and
+switching via RPC is recommended. `SAMPLE_EVERY` defaults to 32, zero disables
+sampling explicitly for timing. RPC interval arguments may be decimal strings.
 `indexer_row_shard_status` returns counters and CUDA event phase totals.
 Drain requests before switching; require four agreeing replies. Prefill is
 eager. Decode, verify and CUDA graphs keep their original forward method.
@@ -30,8 +38,28 @@ SELF checks two replicated scorer/selector invocations. CHECK gathers owner
 indices and compares every int32 against a replicated reference, including
 order and `-1` padding. Any local mismatch is voted over the TP device group;
 all workers raise before attention consumes that layer's indices. The stock
-reference writes the authoritative buffer; candidate data never replaces it.
-This is a falsification tool, not a guarantee that future unchecked calls pass.
+reference writes the authoritative buffer in SELF/CHECK; their candidate data
+never replaces it.
+FAST computes only original owned FP4x tiles plus the padded gather, then
+copies the gathered raw indices into the existing shared buffer. It does no
+replicated reference or equality work on unsampled calls. Generic E4M3's changed
+scorer launch dimensions remain checked-only: FAST requires FP4x installation.
+First eligible layer invocation after a mode/interval change and every Nth
+eligible invocation thereafter gets the full replicated reference and all-rank
+raw equality vote. Sampling counts eligible computing-layer invocations, not
+requests, metadata spans or static skip layers; a global sample does not cover
+every layer of every request. Any sampled failure latches FAILED on every rank,
+raises before attention, and rejects subsequent switches/forwards. Kill and
+restore the candidate; OFF cannot erase the failure. Sampling is a falsifier,
+not a proof for unsampled inputs. Short/ineligible prefill remains replicated.
+
+With sampling zero, status deltas must report `checked=sampled=0` and zero
+reference/equality CUDA-event time; `fast_chunks=chunks>0` on all four ranks.
+Events use the active stream and nonblocking completed-event reaping. Drained
+status/switch RPCs synchronize the final pending event and harvest totals;
+FAST adds no per-chunk event synchronization. The final shared-buffer copy is
+outside owner/gather phase totals and included in end-to-end TTFT. No profiler,
+CUPTI or nsys is used.
 
 The CPU gate requires scheduled prefill rows 2048..4096, CPU max depth >16384,
 full GLM TP4, PCP1/DCP1, original E4M3 index cache, head dimension 128 and
@@ -77,6 +105,7 @@ Overlay interactions:
   subsequent index sharing keep native paths. No target/MTP duplicate gather
   is added on a layer that does not execute its indexer.
 
+**Historical stock-profile estimate (not a FAST result):**
 `scripts/indexer_row_shard_cost.py` emits estimates for 35K/95K/129K, both
 chunk sizes, and 78 versus 21 layer budgets. The profile measures 8.5K new
 tokens: 35K indexer 0.918 s, 129K logits+top-k 3.13 s; 95K is interpolation.
@@ -108,6 +137,41 @@ gather to the replicated reference, so its expected wall result is slower.
 CUDA `phase_ms` divides owner, gather, reference, equality. FP4x owner/reference
 include their respective key gathers; report this when estimating a future
 fast path. Use max-rank phase deltas. Passing real-prompt comparisons is
-necessary but cannot prove atomic tie determinism for all inputs. Keep the
-performance item parked unless a baseline-compatible deterministic selector
-contract is established separately.
+necessary; new FAST GPU results remain unknown. Stable canonical ties can
+change historical stock outputs, so production promotion additionally needs
+the coordinator's stock-versus-stable quality panel.
+
+## In-boot accelerated A/B probe
+
+`bench/indexer_row_shard_fast_probe.py --manifest prompts.json --output fast.json`
+uses loopback HTTP only, an exclusively owned diagnostic engine and real local
+text files. Manifest is an ordered list of three objects with `depth` values
+35000/95000/129000, `prefix_file`, `suffix_file` (paths relative to manifest).
+Actual prefix tokenizer count must be within 10% of the nominal label; extension
+8192..12500 tokens, allowing boot f's measured 12.3K. Counts are saved, not guessed.
+The client requires stable installation, healthy FP4x workers, four unique ranks,
+identical mode/sampling/eligible-call sequence, and initial OFF/resumed state.
+
+Each trial drains through `/pause?mode=wait&clear_cache=false`, selects OFF,
+resets APC (must succeed), resumes and warms the identical prefix, drains again,
+selects the trial mode, resumes and times its one-token extension. Prefix-cache
+hits are proven by usage details when enabled or the pinned token-hit metric
+(delta, polled after timing). Other traffic invalidates the panel. No graph
+recapture, boots or weight lifecycle actions occur in the client.
+
+At each depth: one mandatory FAST sample-enabled qualification, then three
+OFF/FAST/OFF triplets with sampling zero. Total 30 prefix warms + 30 extensions;
+3 FAST and 6 bracketing OFF scored repetitions per depth. Streamed T=0,
+max_tokens=1, seed=39, ignore_eos=true, logprobs=1 with token-ID representation.
+TTFT is wall time to the first generated-token SSE event (not headers or an
+empty event); completion time runs through DONE. Every extension at that depth
+must have identical text and exact token-ID hashes. Receipts include per-rank
+counter/event deltas, paired TTFTs, completion medians and cached-token counts.
+Prompts, tokens and raw indices are not saved in receipts. CUDA events provide
+internal GPU phases; stdlib wall clock provides HTTP TTFT/completion.
+
+PASS returns OFF with sampling restored and resumes the engine. Any failure
+writes KILL and leaves it paused; attempts OFF readback, and reports
+`restore_required` if cleanup fails. The coordinator owns stop/restore and
+must inspect final state before admitting traffic. This is not a production
+quality qualification or a guarantee of historical-stock output identity.

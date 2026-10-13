@@ -47,6 +47,10 @@ def topk(logits,ks,ke,out,rows,s0,s1,k):
 
 
 class Tensor(unittest.TestCase):
+    def setUp(self):
+        failure = patch.object(R,'FAILED',False)
+        failure.start(); self.addCleanup(failure.stop)
+
     def test_nccl_and_auto_gather_uneven_empty_order(self):
         for n,quantum in ((2051,1024),(2048,1024),(4096,1)):
             rows = emitted(torch.arange(n))
@@ -138,6 +142,54 @@ class Tensor(unittest.TestCase):
                 self.assertTrue(torch.equal(out[begin:begin+n],expected))
                 self.assertTrue(torch.all(out[:begin]==77))
                 self.assertTrue(torch.all(out[begin+n:]==77))
+
+    def test_fast_fp4_owned_only_or_sampled_all_ranks(self):
+        for every,sequence in ((0,0),(1,0),(32,0),(32,1),(32,32)):
+            for spans,qt in (([2051],512),([2048],1024),([4096],512),
+                             ([1040,1040,1040,976],512),([1412,1412,1272],512),([3834,262],1024)):
+                n = sum(spans)
+                begin = 3  # leave preceding decode rows untouched
+                q = torch.arange(n+begin).float().reshape(-1,1,1).expand(-1,1,128).contiguous()
+                weights = torch.ones(n+begin,1)
+                expected = emitted(torch.arange(begin,begin+n))
+                chunks=[]
+                pos=begin
+                for span in spans:
+                    chunks.append(types.SimpleNamespace(token_start=pos,token_end=pos+span,
+                        local_total_seq_lens=95000,block_table=None,local_cu_seq_lens=None,
+                        cu_seqlen_ks=None,cu_seqlen_ke=None))
+                    pos+=span
+                bank = dict(q=torch.empty(qt,1,128), weights=torch.empty(qt,1),
+                            starts=torch.empty(qt,dtype=torch.int32),ends=torch.empty(qt,dtype=torch.int32),
+                            keys=torch.empty(8,128),scales=torch.empty(8))
+                kernel = types.ModuleType('glm_fp4_prefill_kernel')
+                kernel.gather_index_tile = lambda *args:None
+                calls = []
+                def prepare(q,w,ks,ke,qs,ws,starts,ends,absolute,offset,count):
+                    qs.zero_(); qs[:count].copy_(q[absolute:absolute+count]); ws.fill_(1)
+                    starts.zero_(); ends.fill_(8)
+                    calls.append((offset,count,qs.shape[0]))
+                kernel.prepare_index_queries = prepare
+                tasks,owners,slices = R.tile_plan(spans,[qt]*len(spans))
+                for rank,(a,b) in enumerate(slices):
+                    g = group(expected,slices,rank)
+                    dist_mod = types.ModuleType('vllm.distributed'); dist_mod.get_tp_group = lambda:g
+                    out = torch.full((n+begin+2,7),77,dtype=torch.int32)
+                    calls.clear()
+                    with patch.dict(sys.modules,{'vllm.distributed':dist_mod,'glm_fp4_prefill_kernel':kernel}),\
+                         patch.object(R,'MODE','fast'),patch.object(R,'SAMPLE_EVERY',every),\
+                         patch.object(R,'FAST_CHUNKS',sequence),patch.object(R,'require_fast'),patch.object(P,'TOPK',7),patch.object(P,'LOGITS_BYTES',qt*8*4),\
+                         patch.object(P,'geometry',return_value=(qt,8)),patch.object(P,'bank_for',return_value=bank),\
+                         patch.object(P,'_row_shard_stock',P.tiled_prefill,create=True),patch('torch.distributed.all_reduce'):
+                        R.tiled_prefill(torch.empty(1,64,132,dtype=torch.uint8),q,None,weights,chunks,out,
+                                        logits_fn,topk,depth=95000)
+                    first,last=owners[rank]
+                    owned = [(o,count,quantum) for c,o,count,quantum in tasks[first:last]]
+                    full = [(o,count,quantum) for c,o,count,quantum in tasks]
+                    self.assertEqual(calls,owned+(full if every and sequence % every == 0 else []))
+                    self.assertTrue(torch.equal(out[begin:begin+n],expected))
+                    self.assertTrue(torch.all(out[:begin]==77))
+                    self.assertTrue(torch.all(out[begin+n:]==77))
 
 
 if __name__ == '__main__': unittest.main()
