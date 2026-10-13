@@ -39,6 +39,13 @@ def home(env):
     return env.get('DISPRAM_HOME', HOME)
 
 
+def script(env):
+    """Remote dispram.sh invocation; passes DISPRAM_HOME so the script and the recipe agree on the home dir."""
+    h = shlex.quote(home(env))
+    pre = 'DISPRAM_ALLOW_RM_ALLOC_OOM=1 ' if env.get('DISPRAM_ALLOW_RM_ALLOC_OOM') == '1' else ''
+    return pre + 'DISPRAM_HOME=' + h + ' ' + shlex.quote(home(env) + '/dispram.sh')
+
+
 ACTIVE = None  # set by ensure(): True = borrow, False = explicitly disabled; None = not decided (DRY render)
 
 
@@ -63,9 +70,7 @@ READY, UNAVAILABLE, UNSAFE = 'ready', 'unavailable', 'unsafe'
 
 
 def ensure_node(host, env, run=_run, sleep=time.sleep):
-    ds = shlex.quote(home(env) + '/dispram.sh')
-    if env.get('DISPRAM_ALLOW_RM_ALLOC_OOM') == '1':  # fix6, see dispram.sh KERNEL_FILTER
-        ds = 'DISPRAM_ALLOW_RM_ALLOC_OOM=1 ' + ds
+    ds = script(env)  # fix6 DISPRAM_ALLOW_RM_ALLOC_OOM, see dispram.sh KERNEL_FILTER
     rc, inv = run(host, ds + ' invalid-state')
     if rc != 0:
         return UNSAFE, 'invalidated in this boot: ' + inv[-300:]
@@ -120,8 +125,7 @@ def postcheck(hosts, env, run=_run):
         return
     bad = {}
     for h in hosts:
-        pre = 'DISPRAM_ALLOW_RM_ALLOC_OOM=1 ' if env.get('DISPRAM_ALLOW_RM_ALLOC_OOM') == '1' else ''
-        rc, out = run(h, pre + shlex.quote(home(env) + '/dispram.sh') + ' postcheck')
+        rc, out = run(h, script(env) + ' postcheck')
         if rc != 0:
             bad[h] = out[-300:]
     if bad:
@@ -135,7 +139,7 @@ def setup(hosts, env, root, run=_run):
     for h in hosts:
         subprocess.run(['ssh', h, 'mkdir -p ' + shlex.quote(home(env))], check=True)
         subprocess.run(['rsync', '-a', str(root / 'scripts/dispram.sh'), h + ':' + home(env) + '/dispram.sh'], check=True)
-        ds = shlex.quote(home(env) + '/dispram.sh')
+        ds = script(env)
         rc, out = run(h, ds + ' fetch && ' + ds + ' build', timeout=900)
         print(h, out[-400:], flush=True)
         if rc != 0:
