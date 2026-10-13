@@ -1,0 +1,435 @@
+{
+ "date": "2026-10-13",
+ "change": "exact attention-front fusion (GLM_ATTN_FRONT_FUSE=1) on public main + Marlin MoE L2 hints",
+ "sparkdash": {
+  "tool": "bench/sparkdash.py full 262144 (thinking off, 256 tokens, temperature 0)",
+  "sweep": {
+   "decode": [
+    {
+     "kind": "prose",
+     "concurrency": 1,
+     "n": 5,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 40.19,
+     "median_aggregate_decode_tps": 40.19,
+     "aggregate_runs": [
+      37.83,
+      40.34,
+      40.19,
+      40.37,
+      38.77
+     ]
+    },
+    {
+     "kind": "prose",
+     "concurrency": 2,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 26.38,
+     "median_aggregate_decode_tps": 51.7,
+     "aggregate_runs": [
+      51.7,
+      51.73,
+      49.65
+     ]
+    },
+    {
+     "kind": "prose",
+     "concurrency": 4,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 17.17,
+     "median_aggregate_decode_tps": 66.43,
+     "aggregate_runs": [
+      66.43,
+      67.27,
+      66.33
+     ]
+    },
+    {
+     "kind": "prose",
+     "concurrency": 8,
+     "n": 2,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 18.295,
+     "median_aggregate_decode_tps": 61.935,
+     "aggregate_runs": [
+      63.02,
+      60.85
+     ]
+    },
+    {
+     "kind": "prose",
+     "concurrency": 3,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 19.58,
+     "median_aggregate_decode_tps": 57.45,
+     "aggregate_runs": [
+      57.45,
+      56.45,
+      57.95
+     ]
+    },
+    {
+     "kind": "code",
+     "concurrency": 1,
+     "n": 5,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 46.56,
+     "median_aggregate_decode_tps": 46.56,
+     "aggregate_runs": [
+      45.16,
+      46.7,
+      46.64,
+      46.56,
+      44.45
+     ]
+    },
+    {
+     "kind": "code",
+     "concurrency": 2,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 27.34,
+     "median_aggregate_decode_tps": 54.68,
+     "aggregate_runs": [
+      55.05,
+      54.68,
+      52.64
+     ]
+    },
+    {
+     "kind": "code",
+     "concurrency": 4,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 18.14,
+     "median_aggregate_decode_tps": 71.96,
+     "aggregate_runs": [
+      73.2,
+      71.87,
+      71.96
+     ]
+    },
+    {
+     "kind": "code",
+     "concurrency": 8,
+     "n": 2,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 19.405,
+     "median_aggregate_decode_tps": 63.235,
+     "aggregate_runs": [
+      62.57,
+      63.9
+     ]
+    },
+    {
+     "kind": "structured",
+     "concurrency": 1,
+     "n": 5,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 49.77,
+     "median_aggregate_decode_tps": 49.77,
+     "aggregate_runs": [
+      50.02,
+      48.9,
+      48.36,
+      49.77,
+      49.98
+     ]
+    },
+    {
+     "kind": "structured",
+     "concurrency": 2,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 30.99,
+     "median_aggregate_decode_tps": 60.09,
+     "aggregate_runs": [
+      59.44,
+      60.09,
+      60.16
+     ]
+    },
+    {
+     "kind": "structured",
+     "concurrency": 4,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 24.6,
+     "median_aggregate_decode_tps": 93.76,
+     "aggregate_runs": [
+      88.55,
+      94.04,
+      93.76
+     ]
+    },
+    {
+     "kind": "structured",
+     "concurrency": 8,
+     "n": 2,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 25.21,
+     "median_aggregate_decode_tps": 81.125,
+     "aggregate_runs": [
+      80.02,
+      82.23
+     ]
+    },
+    {
+     "kind": "json",
+     "concurrency": 1,
+     "n": 5,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 46.38,
+     "median_aggregate_decode_tps": 46.38,
+     "aggregate_runs": [
+      46.38,
+      46.51,
+      46.37,
+      46.56,
+      46.24
+     ]
+    },
+    {
+     "kind": "json",
+     "concurrency": 2,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 28.83,
+     "median_aggregate_decode_tps": 56.08,
+     "aggregate_runs": [
+      56.2,
+      56.08,
+      56.02
+     ]
+    },
+    {
+     "kind": "json",
+     "concurrency": 4,
+     "n": 3,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 20.75,
+     "median_aggregate_decode_tps": 81.01,
+     "aggregate_runs": [
+      81.06,
+      80.92,
+      81.01
+     ]
+    },
+    {
+     "kind": "json",
+     "concurrency": 8,
+     "n": 2,
+     "runs_failed": 0,
+     "median_per_stream_decode_tps": 21.755,
+     "median_aggregate_decode_tps": 72.11,
+     "aggregate_runs": [
+      71.26,
+      72.96
+     ]
+    }
+   ],
+   "prefill": [
+    {
+     "cell": "4k",
+     "target_tokens": 4096,
+     "n": 3,
+     "median_prefill_tps": 982.81,
+     "runs": [
+      984.81,
+      980.22,
+      982.81
+     ],
+     "median_ttft_ms": 4201.24
+    },
+    {
+     "cell": "8k",
+     "target_tokens": 8192,
+     "n": 3,
+     "median_prefill_tps": 874.6,
+     "runs": [
+      881.84,
+      864.69,
+      874.6
+     ],
+     "median_ttft_ms": 9398.64
+    },
+    {
+     "cell": "16k",
+     "target_tokens": 16384,
+     "n": 3,
+     "median_prefill_tps": 895.43,
+     "runs": [
+      871.03,
+      895.43,
+      898.45
+     ],
+     "median_ttft_ms": 18334.17
+    },
+    {
+     "cell": "32k",
+     "target_tokens": 32768,
+     "n": 3,
+     "median_prefill_tps": 873.08,
+     "runs": [
+      890.19,
+      873.08,
+      865.4
+     ],
+     "median_ttft_ms": 37564.61
+    }
+   ],
+   "max_model_len": 262144,
+   "prefill_32k_tokens": 32768
+  },
+  "prefill_rerun_same_boot": {
+   "4096": {
+    "median_tps": 980.4,
+    "runs": [
+     870.0,
+     984.5,
+     980.4
+    ]
+   },
+   "8192": {
+    "median_tps": 928.9,
+    "runs": [
+     934.0,
+     928.9,
+     884.5
+    ]
+   },
+   "16384": {
+    "median_tps": 874.5,
+    "runs": [
+     874.5,
+     872.8,
+     877.8
+    ]
+   },
+   "32768": {
+    "median_tps": 881.4,
+    "runs": [
+     883.5,
+     880.9,
+     881.4
+    ]
+   }
+  },
+  "diag_same_boot": {
+   "prose_c1": {
+    "n": 15,
+    "median_tps": 40.08,
+    "runs": [
+     40.15,
+     40.08,
+     39.66,
+     39.37,
+     37.66,
+     39.99,
+     40.08,
+     40.19,
+     40.27,
+     40.29,
+     40.19,
+     40.04,
+     39.1,
+     40.11,
+     40.18
+    ],
+    "median_cycle_ms": 72.58,
+    "tokens_per_cycle": 2.909
+   },
+   "code_c1": {
+    "n": 5,
+    "median_tps": 46.59,
+    "runs": [
+     46.71,
+     46.88,
+     46.59,
+     46.49,
+     45.21
+    ],
+    "median_cycle_ms": 81.34,
+    "tokens_per_cycle": 3.789
+   }
+  },
+  "release_l2_only_reference": {
+   "prose_c1_15run_medians_two_boots": [
+    39.84,
+    39.93
+   ],
+   "cycle_ms": [
+    73.02,
+    72.85
+   ]
+  }
+ },
+ "exactness": {
+  "gpu_byte_kit": "176/176 cells byte-equal, eager and 7 graph replays, M1..16",
+  "teacher_forced_prompt_logprobs": [
+   "prose bit-identical maxKL 0.000000",
+   "code bit-identical maxKL 0.000000",
+   "structured bit-identical maxKL 0.000000",
+   "json bit-identical maxKL 0.000000",
+   "math bit-identical maxKL 0.000000",
+   "polish bit-identical maxKL 0.000000",
+   "long-8192 differs maxKL 0.000026",
+   "long-24576 differs maxKL 0.212615"
+  ],
+  "note_long": "long prompts differ between any two boots, including release vs release (prefill nondeterminism)",
+  "t0": "30/30 rows identical, 0 divergence"
+ },
+ "rigmark_1_0_0": {
+  "settings": "thinking on, reasoning_effort low",
+  "decode": {
+   "prose": {
+    "median": 30.902,
+    "minimum": 29.907,
+    "maximum": 31.504,
+    "gate": {
+     "passed": 5,
+     "total": 5
+    }
+   },
+   "code": {
+    "median": 43.66,
+    "minimum": 42.557,
+    "maximum": 43.768,
+    "gate": {
+     "passed": 5,
+     "total": 5
+    }
+   },
+   "structured": {
+    "median": 48.472,
+    "minimum": 48.431,
+    "maximum": 48.581,
+    "gate": {
+     "passed": 5,
+     "total": 5
+    }
+   }
+  },
+  "code_concurrency": {
+   "1": {
+    "aggregate_end_to_end_median": 35.585,
+    "per_stream_decode_median": 38.216
+   },
+   "2": {
+    "aggregate_end_to_end_median": 49.102,
+    "per_stream_decode_median": 27.051
+   },
+   "4": {
+    "aggregate_end_to_end_median": 66.599,
+    "per_stream_decode_median": 18.443
+   }
+  },
+  "prefill_8k": {
+   "cold": 913.709,
+   "warm_replay": 15903.585
+  }
+ }
+}

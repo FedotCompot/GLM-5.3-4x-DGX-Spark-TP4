@@ -4,53 +4,51 @@
 
 Decode tok/s, aggregate **[per stream]**, 256 output tokens, temperature 0.
 Report medians across every scored run: c1 five, c2/c4 three, c8 two; discard only named warmups.
-Every cell below comes from one complete 262,144-context sweep of the October 13 release boot (no failed jobs,
-no best-of selection). The same tool on the same day measured public main without the L2 hints; that sweep and
-15 extra prose c1 runs (median 39.86, range 39.35–40.07) are in [the release result](docs/results/release-1013.json).
+Every cell below comes from one complete 262,144-context sweep of the October 13 attention-front boot (no failed jobs,
+no best-of selection). On the same boot, 15 extra prose c1 runs gave median 40.08 (cycle 72.58 ms, 2.909 tokens per
+cycle); the L2-only release boot measured 39.84–39.93 with the same tool. Multi-stream cells move ±2–5 % between
+boots of identical code, so compare c2–c8 only within one sweep. [Result](docs/results/attnfront-1013.json).
 
 | Prompt type | c1 | c2 | c4 | c8* |
 |---|---:|---:|---:|---:|
-| prose | **39.89** | 51.31 [26.17] | 66.87 [17.29] | 62.86 [18.51] |
-| code | 46.47 | 55.10 [27.55] | 73.19 [18.45] | 63.63 [19.52] |
-| structured | 49.51 | 59.65 [30.76] | 88.89 [24.54] | 79.56 [24.77] |
-| json | 46.21 | 55.82 [28.71] | 80.06 [20.51] | 71.65 [21.62] |
+| prose | **40.19** | 51.70 [26.38] | 66.43 [17.17] | 61.94 [18.30] |
+| code | 46.56 | 54.68 [27.34] | 71.96 [18.14] | 63.24 [19.41] |
+| structured | 49.77 | 60.09 [30.99] | 93.76 [24.60] | 81.13 [25.21] |
+| json | 46.38 | 56.08 [28.83] | 81.01 [20.75] | 72.11 [21.75] |
 
 *Four serving slots: c8 queues four requests. Per-stream decode covers active generation;
 aggregate includes batch wall time. sparkDash repeats one prompt across streams; memory stress uses distinct prompts.
 
-Cold prefill, median of three on the same boot (the sweep's first 4K round ran low, so the prefill cells were rerun
-once as the table rule requires; both are recorded):
+Cold prefill, median of three on the same boot (the sweep's 8K cell ran low, 875 tok/s, so the prefill cells were
+rerun once as the table rule requires; both are recorded):
 
 | Input | 4K | 8K | 16K | 32K |
 |---|---:|---:|---:|---:|
-| cold prefill tok/s | 988 | 939 | 892 | 884 |
-| time to first token (s) | 4.1 | 8.7 | 18.4 | 37.1 |
+| cold prefill tok/s | 980 | 929 | 875 | 881 |
+| time to first token (s) | 4.2 | 8.8 | 18.7 | 37.2 |
 
 ## RigMark 1.0.0 (thinking on, effort low)
 
-RigMark was not rerun for the October 13 update. The c1 decode cells below are medians of five from the qualified
-next40 candidate; all workload gates passed. The concurrency and prefill tables are the October 10 release measurements.
+Measured on the same October 13 attention-front boot as the sparkDash table; all workload gates passed (5/5 each).
 
 | Workload | c1 decode tok/s | Observed range |
 |---|---:|---:|
-| prose | **30.403** | 29.404–31.053 |
-| code | 42.285 | 42.031–42.926 |
-| structured | 47.670 | 47.503–47.984 |
+| prose | **30.902** | 29.907–31.504 |
+| code | 43.660 | 42.557–43.768 |
+| structured | 48.472 | 48.431–48.581 |
 
 Code concurrency, aggregate end-to-end tok/s **[per-stream decode]**:
 
 | Workload | c1 | c2 | c4 |
 |---|---:|---:|---:|
-| code | 34.89 [37.37] | 46.99 [25.20] | 67.90 [18.33] |
+| code | 35.59 [38.22] | 49.10 [27.05] | 66.60 [18.44] |
 
 | 8K prefill | tok/s |
 |---|---:|
-| cold | 904.7 |
-| warm prefix-cache replay | 16,114.3 |
+| cold | 913.7 |
+| warm prefix-cache replay | 15,903.6 |
 
-The next40 c1 receipt and its SHA256 provenance are recorded in
-[the next40 result](docs/results/next40-c1.json). Historical cells retain the provenance in
-[the reduced-gate notes](docs/release-1010-gate.md#recorded-reduced-gate-and-cell-provenance).
+The receipt summary is in [the attention-front result](docs/results/attnfront-1013.json).
 
 ## Current release configuration
 
@@ -65,6 +63,13 @@ Native confidence stopping retains K3 at c1 and K2 in multi-request batches. Dec
 4096/N40. The greedy maximum/confidence operation, K-stop guard packet/verdict, and unused MLA planning are fused
 or skipped on their qualified static paths. Row selection, cache trim and async v2 remain absent from this export.
 Split32 MLA and the existing rotary storage retain the public release layout.
+**Exact attention-front fusion** is on (October 13): on decode graphs (M1..16) the two NVFP4 `fused_qkv_a`
+partitions go straight to their consumers without `cat`, the q_a and kv_a RMSNorms run as one launch that keeps
+vLLM's per-row reduction tree, and k-RoPE plus the FP4x KV pack-store run as one launch. Larger batches and prefill
+keep the stock path. Outputs are unchanged (bit-identical byte kit on 176 GPU cells, bit-identical teacher-forced
+prompt logprobs on the short panel, temperature-0 30/30); the c1 cycle drops by about 0.4 ms. It needs a one-time
+local build: `./start.sh attnfront-setup` (pinned image, no GPU or network; `GLM_ATTN_FRONT_FUSE=0` skips it).
+[Attention-front details](docs/attnfront/README.md).
 **Marlin MoE L2 hints** are on (October 13): the target MoE expert-weight stream loads with an `evict_first` L2 policy,
 so the expert weights read once per step stop displacing the small reused tensors. Model outputs are unchanged
 (bit-identical teacher-forced prompt logprobs on the short panel, temperature-0 30/30); every per-stream sparkDash
@@ -124,7 +129,7 @@ S-class supplement ran fresh 16K x2 and 250K x2 on the same release boot.
 | Mixed-load soak | PASS; requested 15 min, observed 1071.1 s; 27 requests, 0 errors, 0 preemptions; quiet drift -0.02/0.01/-0.02/0.02 GiB (ranks 0/1/2/3). |
 | Draft-head + eh_proj INIT | 4/4 ranks ON/ready, combined FP8 eh_proj qualified; 16 cases and 342/342/342/342 rows per rank; 0 failed; target head bit-exact on every rank. |
 | Temperature-0 sequential repeats on the next40 candidate | 30/30 prompts identical in each of 3 repeats (90/90 total); every repeat kept 30/30 native-ID equality to the frozen baseline. |
-| RigMark 1.0.0, thinking on, effort low | fresh c1: prose 30.40 tok/s, code 42.29 tok/s, structured 47.67 tok/s; retained release cells: code c4 aggregate 67.90 tok/s, 8K cold prefill 905 tok/s; all workload gates passed. |
+| RigMark 1.0.0, thinking on, effort low | October 13 attention-front boot, c1: prose 30.90 tok/s, code 43.66 tok/s, structured 48.47 tok/s; code c4 aggregate 66.60 tok/s, 8K cold prefill 914 tok/s; all workload gates passed. |
 
 APC stayed on: repeat 2 at 16K (0.6 s TTFT) and 250K (1.2 s TTFT) is a prefix-cache-hit replay, not an independent prefill.
 
@@ -162,6 +167,7 @@ with idle reset, and an 1800 s boot deadline. APC stays on. [Memory layout](docs
 | FP8 draft eh_proj | Replicated draft-only projection; combined INIT qualification | `GLM_DRAFT_EHPROJ=fp8`, `GLM_DRAFT_EHPROJ_INIT=1` | knapcio; vLLM FP8 Marlin contributors; NVIDIA FP8; PyTorch |
 | Glue-lite F1+F2+F3 | Remove router cast and repeated MoE workspace reset; reuse the pinned shared DSA index buffer | `GLM_GLUE_ROUTER_BF16=1`, `GLM_GLUE_MOE_WS=1`, `GLM_GLUE_DSA_IDX_CACHE=1` | knapcio; vLLM grouped-topk, Marlin and sparse-MLA contributors |
 | Decode launch reductions | Share greedy maximum, fuse guard packet/verdict, skip unused generic and K-stop MLA plans | `GLM_GREEDY_SAMPLE_FUSE=1`, `GLM_KSTOP_GUARD_FUSE=1`, `GLM_SKIP_MLA_PLAN=1`, `GLM_SKIP_MLA_PLAN_KSTOP=1` | knapcio; PyTorch, Triton, vLLM and FlashInfer contributors |
+| Attention-front fusion | NVFP4 qkv_a partitions without `cat`, paired q/kv RMSNorm in one launch, k-RoPE + FP4x KV pack-store in one launch, decode M1..16; bit-identical outputs | `GLM_ATTN_FRONT_FUSE=1`, one-time `./start.sh attnfront-setup` | vLLM contributors' `rms_norm_kernel` / rotary kernels and NVIDIA CUB (Apache-2.0, sources retained); knapcio |
 | Marlin MoE L2 hints | `evict_first` L2 policy on the target MoE expert-weight stream (single fixed bank); bit-identical outputs | `GLM_MARLIN_L2HINT=on`, one-time `./start.sh l2hint-setup` | sudoingX ([dgx-spark-deepseek-v41](https://github.com/sudoingX/dgx-spark-deepseek-v41)) evict-first weight-stream idea, no code copied; IST-DASLab / Neural Magic / vLLM Marlin MoE (Apache-2.0); NVIDIA PTX cache policies; knapcio |
 | Sparse MLA and dirty L2 | GB10-compatible split32 MLA; discard consumed partials | `GLM_FULL_MLA=triton`, `GLM_DIRTY_L2=discard` | CosmicRaisins; Matt Mastracci ideas; NVIDIA PTX; Triton |
 | Switched RoCE | RDMA TP collectives on both rails | `GLM_ROCE_ALLREDUCE=1` | b12x/RoCEnante; Luke Alonso; Jason Cook; tonyd2wild; rhys101 |

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-13 — exact attention-front fusion
+
+On decode CUDA graphs (M1..16) the NVFP4 `fused_qkv_a` partitions (2048 + 576) reach their consumers without `cat`,
+the q_a/kv_a RMSNorms run as one launch that reproduces vLLM's per-row CUB reduction, and k-RoPE plus the FP4x KV
+pack-store run as one launch (`GLM_ATTN_FRONT_FUSE=1`, default; one-time `./start.sh attnfront-setup` build).
+Prefill and batches above 16 rows keep the stock path; layouts other than the release NVFP4/FP4x/Triton MLA stay
+stock without hooks. Outputs unchanged: 176 GPU byte-equality cells (eager and graph replay), teacher-forced prompt
+logprobs bit-identical on the short panel, temperature-0 30/30. Same tool, prose c1: 15-run median 40.08
+(L2-only release boots 39.84–39.93), c1 cycle 72.58 ms vs 73.02 ms; full sparkDash prose c1 40.19, code c1 46.56,
+structured c1 49.77, json c1 46.38; RigMark prose 30.90, code 43.66, structured 48.47. Multi-stream cells stay within
+boot-to-boot variation (±2–5 %).
+
 ## 2026-10-13 — Marlin MoE L2 hints
 
 The target Marlin MoE expert-weight stream now loads with an `evict_first` L2 policy (`GLM_MARLIN_L2HINT=on`,
