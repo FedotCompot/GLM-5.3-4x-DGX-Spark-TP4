@@ -1070,11 +1070,9 @@ class Release1013Defaults(unittest.TestCase):
     """Profile defaults 2026-10-13: stable top-k + FAST row shard, L2 hints (local build), re-arm complete."""
     def test_profile_defaults(self):
         text = (ROOT/'profiles/current.env').read_text()
-        for line in ('export GLM_DECODE_FAIR_REARM="${GLM_DECODE_FAIR_REARM:-complete}"',
-                     'export GLM_INDEXER_STABLE_TOPK="${GLM_INDEXER_STABLE_TOPK:-1}"',
-                     'export GLM_INDEXER_ROW_SHARD="${GLM_INDEXER_ROW_SHARD:-1}"',
-                     'export GLM_MARLIN_L2HINT="${GLM_MARLIN_L2HINT:-on}"'):
-            self.assertIn(line, text)
+        self.assertIn('export GLM_MARLIN_L2HINT="${GLM_MARLIN_L2HINT:-on}"', text)
+        for key in ('GLM_DECODE_FAIR_REARM', 'GLM_INDEXER_STABLE_TOPK', 'GLM_INDEXER_ROW_SHARD'):
+            self.assertNotIn('export ' + key + '=', text)   # opt-in only
         self.assertNotIn('export GLM_INDEXER_ROW_SHARD_INIT', text)  # mode follows the stable selector
 
     def test_row_shard_enables_private_rpcs(self):
