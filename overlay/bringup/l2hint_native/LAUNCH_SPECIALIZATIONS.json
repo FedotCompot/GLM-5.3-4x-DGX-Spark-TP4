@@ -61,7 +61,7 @@
       32768,
       24320
     ],
-    "actual_Spark_02": "unknown until graph inspection",
+    "actual_gb10_node": "unknown until graph inspection",
     "note": "Automatic configuration uses OFF kernel resource attributes for both flags, preserving identical geometry and allocation. Not all candidate allocations are admitted for every tile; stock cache-size checks apply."
   },
   "serving_shapes": {
