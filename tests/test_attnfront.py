@@ -34,10 +34,27 @@ class Config(unittest.TestCase):
         with self.assertRaises(ValueError):a.options(dict(ON,**dict.fromkeys(a.FLAGS,'0')))
     def test_release_dependencies(self):
         for key in ('GLM_ATTN_WEIGHTS','GLM_KV_FORMAT','GLM_FULL_MLA'):
-            with self.subTest(key=key),self.assertRaises(ValueError):a.options(dict(ON,**{key:'other'}))
-    def test_nonqualified_composition_refused(self):
-        for key in ('GLM_NVFP4_MERGED','GLM_FP4_RECENT_WINDOW','GLM_FP4_RECENT_AB','GLM_NVFP4_WSIM'):
-            with self.subTest(key=key),self.assertRaises(ValueError):a.options(dict(ON,**{key:'1'}))
+            for value in ('other', None):
+                env=dict(ON,**{key:value})
+                if value is None: del env[key]
+                with self.subTest(key=key,value=value):
+                    self.assertIsNone(a.options(env))
+                    self.assert_stock_registration(env)
+    def test_nonqualified_composition_falls_back(self):
+        for key in ('GLM_NVFP4_MERGED','GLM_FP4_RECENT_WINDOW','GLM_FP4_RECENT_AB',
+                    'GLM_NVFP4_WSIM','VLLM_BATCH_INVARIANT','VLLM_MARLIN_USE_ATOMIC_ADD'):
+            with self.subTest(key=key):
+                env=dict(ON,**{key:'1'})
+                self.assertIsNone(a.options(env))
+                self.assert_stock_registration(env)
+    def test_batch_invariant_without_norms_keeps_other_pieces(self):
+        self.assertEqual(a.options(dict(ON,VLLM_BATCH_INVARIANT='1',GLM_ATTN_FRONT_NORMS='0')),
+                         (True,False,True))
+    def assert_stock_registration(self, env):
+        before=list(sys.meta_path)
+        with patch.object(a,'check_pins',side_effect=AssertionError),patch.object(a,'register_ops',side_effect=AssertionError):
+            self.assertFalse(a.register(env))
+        self.assertEqual(before,sys.meta_path)
     def test_off_register_no_import_or_hooks(self):
         before=list(sys.meta_path)
         with patch.object(a,'check_pins',side_effect=AssertionError),patch.object(a,'register_ops',side_effect=AssertionError):
@@ -312,13 +329,14 @@ class OnDry(unittest.TestCase):
             cfg=Path(tmp)/'fixture.env'
             text=(ROOT/'tests/fixtures/legacy-dry.env').read_text()+"\nGLM_MARLIN_L2HINT=off\nGLM_ATTN_WEIGHTS=nvfp4\nGLM_NVFP4_GROUPS=attn\nGLM_KV_FORMAT=fp4x\nGLM_ATTN_FRONT_PARTS=1\nGLM_ATTN_FRONT_NORMS=1\nGLM_ATTN_FRONT_ROPE_PACK=1\nRECIPE_DISPRAM=require\n"
             vectors=[]
-            for mode in ('0','1'):
-                cfg.write_text(text+'GLM_ATTN_FRONT_FUSE='+mode+'\n')
+            for mode in ('0','1',None):
+                cfg.write_text(text+('' if mode is None else 'GLM_ATTN_FRONT_FUSE='+mode+'\n'))
                 env=dict(os.environ,DRY='1',CTN='glm53full-attnfront-dry',RECIPE_CONFIG=str(cfg),GLM_MARLIN_L2HINT='off')
                 r=subprocess.run([str(tree/'start.sh'),'serve'],env=env,text=True,capture_output=True,check=True)
                 vectors.append([shlex.split(line) for line in r.stdout.splitlines() if line.startswith('docker run ')])
             self.assertEqual(len(vectors[1]),8)
-            for off,on in zip(*vectors):
+            self.assertEqual(vectors[2],vectors[1])  # release default equals explicit ON
+            for off,on in zip(vectors[0],vectors[1]):
                 delta={token for token in on if token.startswith('GLM_ATTN_FRONT_')}
                 self.assertEqual(delta,{'GLM_ATTN_FRONT_FUSE=1','GLM_ATTN_FRONT_PARTS=1','GLM_ATTN_FRONT_NORMS=1','GLM_ATTN_FRONT_ROPE_PACK=1'})
                 filtered=[];i=0

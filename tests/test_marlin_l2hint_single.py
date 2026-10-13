@@ -161,9 +161,9 @@ class DryAndBuild(unittest.TestCase):
         code=subprocess.check_output(['git','show','7492ae7:scripts/cluster.py'],cwd=ROOT,text=True)
         scope={'__name__':'base_cluster'};exec(compile(code,'base_cluster','exec'),scope)
         # 10-13 profile keys are launcher-validated, not passthrough; the 7492ae7 base never saw them.
-        scope['PROFILE_KEYS']=[x for x in scope['PROFILE_KEYS'] if x not in ('GLM_INDEXER_STABLE_TOPK','GLM_INDEXER_ROW_SHARD','GLM_INDEXER_ROW_SHARD_INIT','GLM_MARLIN_L2HINT','GLM_DECODE_FAIR_REARM')]
+        scope['PROFILE_KEYS']=[x for x in scope['PROFILE_KEYS'] if x not in ('GLM_INDEXER_STABLE_TOPK','GLM_INDEXER_ROW_SHARD','GLM_INDEXER_ROW_SHARD_INIT','GLM_MARLIN_L2HINT','GLM_DECODE_FAIR_REARM','GLM_ATTN_FRONT_FUSE')]
         profile={k:'v-'+k for k in C.PROFILE_KEYS}
-        profile.update(GLM_INDEXER_STABLE_TOPK='0',GLM_INDEXER_ROW_SHARD='0',GLM_MARLIN_L2HINT='off')
+        profile.update(GLM_INDEXER_STABLE_TOPK='0',GLM_INDEXER_ROW_SHARD='0',GLM_MARLIN_L2HINT='off',GLM_ATTN_FRONT_FUSE='0')
         profile.update(GLM_MTP_KSTOP='1',GLM_MTP_KSTOP_UNIFORM_BATCH='k2',GLM_PAD_HYGIENE='0',
             GLM_SPEC_SAMPLE='0',GLM_INDEXER_SHORTCUT='0',GLM_KV_FORMAT='fp4x',GLM_FULL_MLA='triton',
             GLM_MTP_KSTOP_CAPTURE_LAYOUT='reuse',VLLM_USE_V2_MODEL_RUNNER='1',

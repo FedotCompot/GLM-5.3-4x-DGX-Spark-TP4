@@ -293,9 +293,9 @@ class StartupAndBuild(unittest.TestCase):
         scope={'__name__':'base_cluster'};exec(compile(code,'base_cluster','exec'),scope)
         base=NS(**scope)
         # 10-13 profile keys are launcher-validated, not passthrough; the 7492ae7 base never saw them.
-        scope['PROFILE_KEYS']=[x for x in scope['PROFILE_KEYS'] if x not in ('GLM_INDEXER_STABLE_TOPK','GLM_INDEXER_ROW_SHARD','GLM_INDEXER_ROW_SHARD_INIT','GLM_MARLIN_L2HINT','GLM_DECODE_FAIR_REARM')]
+        scope['PROFILE_KEYS']=[x for x in scope['PROFILE_KEYS'] if x not in ('GLM_INDEXER_STABLE_TOPK','GLM_INDEXER_ROW_SHARD','GLM_INDEXER_ROW_SHARD_INIT','GLM_MARLIN_L2HINT','GLM_DECODE_FAIR_REARM','GLM_ATTN_FRONT_FUSE')]
         profile={key:'v-'+key for key in C.PROFILE_KEYS}
-        profile.update(GLM_INDEXER_STABLE_TOPK='0',GLM_INDEXER_ROW_SHARD='0',GLM_MARLIN_L2HINT='off')
+        profile.update(GLM_INDEXER_STABLE_TOPK='0',GLM_INDEXER_ROW_SHARD='0',GLM_MARLIN_L2HINT='off',GLM_ATTN_FRONT_FUSE='0')
         profile.update(GLM_MTP_KSTOP='0',GLM_MTP_KSTOP_UNIFORM_BATCH='0',GLM_PAD_HYGIENE='0',
                        GLM_DRAFT_HEAD='0',GLM_DRAFT_EHPROJ='0',GLM_DECODE_FAIR='0',GLM_ATTN_WEIGHTS='int8',
                        GLM_NVFP4_GROUPS='attn',GLM_MOE_CANON_ALIGN='0',GLM_MOE_DET_ALIGN='0',
@@ -309,7 +309,7 @@ class StartupAndBuild(unittest.TestCase):
         import test_launcher
         C=test_launcher.C
         profile={key:'v-'+key for key in C.PROFILE_KEYS}
-        profile.update(GLM_INDEXER_STABLE_TOPK='0',GLM_INDEXER_ROW_SHARD='0',GLM_MARLIN_L2HINT='off')
+        profile.update(GLM_INDEXER_STABLE_TOPK='0',GLM_INDEXER_ROW_SHARD='0',GLM_MARLIN_L2HINT='off',GLM_ATTN_FRONT_FUSE='0')
         profile.update(GLM_MTP_KSTOP='0',GLM_MTP_KSTOP_UNIFORM_BATCH='0',GLM_PAD_HYGIENE='0',
                        GLM_DRAFT_HEAD='0',GLM_DRAFT_EHPROJ='0',GLM_DECODE_FAIR='0',GLM_ATTN_WEIGHTS='int8',
                        GLM_NVFP4_GROUPS='attn',GLM_MOE_CANON_ALIGN='0',GLM_MOE_DET_ALIGN='1',

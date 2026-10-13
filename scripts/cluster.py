@@ -30,7 +30,7 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
                     'GLM_DRAFT_HEAD', 'GLM_DRAFT_HEAD_INIT', 'GLM_DECODE_FAIR',
                     'GLM_DECODE_FAIR_CHUNK', 'GLM_DECODE_FAIR_DECODE_STEPS', 'GLM_DECODE_FAIR_CONTROL', 'GLM_DECODE_FAIR_REARM',
                     'GLM_MOE_DET_ALIGN', 'GLM_INDEXER_STABLE_TOPK', 'GLM_INDEXER_ROW_SHARD',
-                    'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_MARLIN_L2HINT')]
+                    'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_MARLIN_L2HINT', 'GLM_ATTN_FRONT_FUSE')]
 GiB = 1 << 30
 HEALTH_POLL_S = 1          # loopback /health while booting
 SAMPLE_BOOT_S = 5          # rank samples (memory floors, admission window) while booting

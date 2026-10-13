@@ -181,7 +181,7 @@ expanded memory budgets and performance remain unqualified.
   [5a8129d0837b6eb8aa469bb04d8e8fd7958e4d3e](https://github.com/kindlingai/kindling-spark-os/tree/5a8129d0837b6eb8aa469bb04d8e8fd7958e4d3e/kindling/dispram). Downloaded separately; no relicensing or binary bundled here.
 - **Marlin kernels via vLLM (IST-DASLab and vLLM contributors); NVIDIA NVFP4 format**: NVFP4 W4A16 packing, scales, TP slicing and native-MTP dispatch used by the independently written sidecar converters. **Z.ai**: architecture, tokenizer, native MTP and model licence. **Tech2wild/tonyd2wild**: original Int4-Int8Mix checkpoint.
 
-### Attention-front E0 fusion (default OFF)
+### Attention-front E0 fusion (release default ON)
 
 The combined RMSNorm preserves vLLM contributors' `rms_norm_kernel` at
 `487ecf187`, including their vectorization helpers and NVIDIA CUB reduction.

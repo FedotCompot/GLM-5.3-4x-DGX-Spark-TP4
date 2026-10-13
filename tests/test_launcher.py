@@ -1085,13 +1085,55 @@ if __name__=='__main__':unittest.main(verbosity=2)
 
 
 class Release1013Defaults(unittest.TestCase):
-    """Profile defaults 2026-10-13: stable top-k + FAST row shard, L2 hints (local build), re-arm complete."""
+    """Release defaults: L2 hints and exact attention front; other selectors opt-in."""
     def test_profile_defaults(self):
         text = (ROOT/'profiles/current.env').read_text()
         self.assertIn('export GLM_MARLIN_L2HINT="${GLM_MARLIN_L2HINT:-on}"', text)
+        self.assertIn('export GLM_ATTN_FRONT_FUSE="${GLM_ATTN_FRONT_FUSE:-1}"', text)
+        self.assertNotIn('GLM_ATTN_FRONT_FUSE', C.PROFILE_KEYS)
         for key in ('GLM_DECODE_FAIR_REARM', 'GLM_INDEXER_STABLE_TOPK', 'GLM_INDEXER_ROW_SHARD'):
             self.assertNotIn('export ' + key + '=', text)   # opt-in only
         self.assertNotIn('export GLM_INDEXER_ROW_SHARD_INIT', text)  # mode follows the stable selector
+
+    def test_attnfront_fallback_has_no_container_env(self):
+        self.enterContext(patch.object(sys,'path',[str(ROOT/'overlay/bringup'),*sys.path]))
+        on=dict(GLM_ATTN_FRONT_FUSE='1',GLM_ATTN_WEIGHTS='nvfp4',
+                GLM_KV_FORMAT='fp4x',GLM_FULL_MLA='triton',
+                VLLM_USE_V2_MODEL_RUNNER='1',GLM_MLA_SPLIT_K='32',
+                GLM_ATTN_NVFP4_DIR='/srv/attn',GLM_NVFP4_GROUPS='attn')
+        for key,value in (('GLM_ATTN_WEIGHTS','int8'),('GLM_KV_FORMAT','fp8'),
+                          ('GLM_FULL_MLA','0'),('GLM_NVFP4_MERGED','1'),
+                          ('GLM_FP4_RECENT_WINDOW','2048'),('GLM_FP4_RECENT_AB','1'),
+                          ('GLM_NVFP4_WSIM','1'),('VLLM_BATCH_INVARIANT','1'),
+                          ('VLLM_MARLIN_USE_ATOMIC_ADD','1')):
+            selected=on|{key:value}
+            if key=='GLM_FP4_RECENT_AB':
+                selected.update(GLM_FP4_RECENT_WINDOW='2048',VLLM_SERVER_DEV_MODE='1')
+            if key=='GLM_NVFP4_WSIM':
+                selected['GLM_ATTN_WEIGHTS']='int8'  # simulator cannot use real NVFP4
+            with self.subTest(key=key),patch.dict(C.ENV,selected):
+                from glm_attnfront import options
+                self.assertIsNone(options(C.ENV))
+                baseline=dict(C.ENV,GLM_ATTN_FRONT_FUSE='0')
+                with patch.dict(C.ENV,baseline): stock=C.optional_env()
+                self.assertEqual(C.optional_env(),stock)
+                self.assertFalse(any(k.startswith('GLM_ATTN_FRONT_') for k in stock))
+
+    def test_attnfront_missing_build_and_fallback(self):
+        self.enterContext(patch.object(sys,'path',[str(ROOT/'overlay/bringup'),*sys.path]))
+        on=dict(GLM_ATTN_FRONT_FUSE='1',GLM_ATTN_WEIGHTS='nvfp4',
+                GLM_KV_FORMAT='fp4x',GLM_FULL_MLA='triton',DRY='0')
+        with tempfile.TemporaryDirectory() as d,patch.object(C,'ROOT',Path(d)), \
+             patch.object(C,'validate'),patch.object(C,'launch_switches'), \
+             patch.object(C,'floors_note',return_value=''),patch.object(C,'l2hint_installed'), \
+             patch.object(C,'kstop_note',return_value=''),patch.object(C,'serve') as serve, \
+             patch.object(sys,'argv',['cluster.py','serve']),patch.dict(C.ENV,on):
+            with self.assertRaisesRegex(RuntimeError,'attnfront-setup'):
+                C.main()
+            serve.assert_not_called()
+            with patch.dict(C.ENV,GLM_ATTN_WEIGHTS='int8'):
+                C.main()
+            serve.assert_called_once()
 
     def test_row_shard_enables_private_rpcs(self):
         with patch.dict(C.ENV, {'GLM_INDEXER_ROW_SHARD': '1', 'GLM_INDEXER_STABLE_TOPK': '1'}):

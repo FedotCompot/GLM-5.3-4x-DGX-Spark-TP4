@@ -1,7 +1,8 @@
-# Default-OFF E0 attention front
+# Exact E0 attention front
 
-Base `261cbdb`, pinned ARM64 vLLM `g487ecf187`; no GPU qualification yet.
-`GLM_ATTN_FRONT_FUSE=1` is boot-fixed. Independently disable any piece with
+Base `261cbdb`, pinned ARM64 vLLM `g487ecf187`.
+The release profile defaults to boot-fixed `GLM_ATTN_FRONT_FUSE=1`;
+set `GLM_ATTN_FRONT_FUSE=0` for stock execution. Independently disable any piece with
 `GLM_ATTN_FRONT_PARTS=0`, `GLM_ATTN_FRONT_NORMS=0`, or
 `GLM_ATTN_FRONT_ROPE_PACK=0`; all default to 1 under the master switch.
 OFF installs no hooks, loads no native library, and preserves the original
@@ -9,7 +10,8 @@ OFF installs no hooks, loads no native library, and preserves the original
 
 Only released NVFP4/FP4x/Triton MLA is admitted. Recent-KV, merged NVFP4,
 weight simulation, Marlin atomic reduction, and batch-invariant norms are
-refused. Dimensions/layouts outside the M1..16/H16/D512/R64 path use stock.
+handled by stock execution with no attention-front hooks or container env pairs.
+Invalid switch values still raise. Dimensions/layouts outside the M1..16/H16/D512/R64 path use stock.
 Admission enumerates `(hidden,q_rank,kv_rank,rope,local_heads,nope,value)` as
 `(6144,2048,512,64,16,192,256)` and legacy q1536. Predicates derive partition
 widths, q strides and k strides from module attributes. Real partitions are
