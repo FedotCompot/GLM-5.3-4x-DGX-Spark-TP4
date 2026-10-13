@@ -24,6 +24,7 @@ python3 -B "$ROOT/tests/test_persistent_cache.py"
 python3 -B "$ROOT/tests/test_adaptive_chunk.py"
 python3 -B "$ROOT/tests/test_decode_fair.py"
 python3 -B "$ROOT/tests/test_decode_timeslice.py"
+python3 -B "$ROOT/tests/test_decode_fair_probe.py"
 python3 -B "$ROOT/tests/test_t0_probe.py"
 DEPS=(torch numpy regex transformers pydantic cachetools msgspec pyzmq psutil cloudpickle blake3 openai prometheus_client pyyaml sentencepiece tiktoken einops cbor2 aiohttp openai-harmony pillow pybase64 uvloop py-cpuinfo llguidance xgrammar safetensors)
 if [[ -n ${GLM_CPU_PYTHON:-} ]]; then
