@@ -162,6 +162,14 @@ The threshold-prefix selector, canonical output sort integration, CPU oracle,
 source-pinned hooks and event-only benchmark are original local work (knapcio).
 No upstream kernel implementation is copied.
 
+- **Experimental Marlin L2 cache policy (default OFF)**: sudoingX/
+  [dgx-spark-deepseek-v41](https://github.com/sudoingX/dgx-spark-deepseek-v41)
+  supplied the evict-first expert-weight stream idea; no code copied from that
+  project. Elias Frantar / IST-DASLab, Neural Magic and vLLM contributors:
+  Apache-2.0 Marlin MoE source. NVIDIA: PTX policy instructions. knapcio:
+  G-screen b77256c, isolated serving extension, graph banks and paired probe.
+  Full provenance: `overlay/bringup/l2hint_native/CREDITS.md`.
+
 The conditional cache policy uses Linux kernel memory interfaces and the
 Tech2wild/tonyd2wild serving comparison as motivation. The memory-pool extension
 retains kindlingai's dispram integration and the existing FP4x implementation.

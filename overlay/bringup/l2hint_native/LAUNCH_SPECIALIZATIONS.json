@@ -1,0 +1,78 @@
+{
+  "dtype": "BF16 activation/output/scales, U4B8 weight, group128",
+  "K": 6144,
+  "N": 1024,
+  "stages": 4,
+  "thread_m_blocks": 1,
+  "tiles": [
+    {
+      "threads": 256,
+      "thread_n_blocks": 8,
+      "thread_k_blocks": 8,
+      "m_block_size_8": [
+        false,
+        true
+      ],
+      "hint": [
+        false,
+        true
+      ]
+    },
+    {
+      "threads": 128,
+      "thread_n_blocks": 8,
+      "thread_k_blocks": 4,
+      "m_block_size_8": [
+        false,
+        true
+      ],
+      "hint": [
+        false,
+        true
+      ]
+    },
+    {
+      "threads": 128,
+      "thread_n_blocks": 4,
+      "thread_k_blocks": 8,
+      "m_block_size_8": [
+        false,
+        true
+      ],
+      "hint": [
+        false,
+        true
+      ]
+    }
+  ],
+  "dynamic_shared_bytes": {
+    "source": "unchanged stock marlin_mm/determine_exec_config",
+    "formula": "optin if blocks_per_sm=1 else floor(optin/blocks_per_sm)-1024",
+    "blocks_per_sm_candidates": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "static_model_optin": 101376,
+    "static_model_candidate_bytes": [
+      101376,
+      49664,
+      32768,
+      24320
+    ],
+    "actual_Spark_02": "unknown until graph inspection",
+    "note": "Automatic configuration uses OFF kernel resource attributes for both flags, preserving identical geometry and allocation. Not all candidate allocations are admitted for every tile; stock cache-size checks apply."
+  },
+  "serving_shapes": {
+    "gate_up": {
+      "K": 6144,
+      "N": 1024
+    },
+    "down": {
+      "K": 512,
+      "N": 6144
+    }
+  },
+  "fallback": "stock for all other shapes, block M outside 8/16, MTP NVFP4"
+}
