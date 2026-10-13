@@ -40,12 +40,12 @@ def cells():
     return [(kind, c) for kind in KINDS for c in range(1, 17)]
 
 
-def validate_job(job, posted, config):
+def validate_job(job, posted, config, spark='rank0'):
     errors = []
     for key in ('benchId', 'startedAt', 'sparkId'):
         if job.get(key) != posted.get(key):
             errors.append('job identity changed: ' + key)
-    if job.get('sparkId') != 'rank0' or job.get('status') != 'completed' or job.get('error'):
+    if job.get('sparkId') != spark or job.get('status') != 'completed' or job.get('error'):
         errors.append('job failed or wrong Spark')
     if any((job.get('config') or {}).get(k) != v for k, v in config.items()):
         errors.append('config mismatch')
@@ -169,7 +169,7 @@ class Probes:
                 if time.monotonic()-started > 300:
                     raise TimeoutError('sparkDash cell >300 seconds')
                 time.sleep(2)
-            row['errors'] = validate_job(job, posted, config); save(self.out/'sparkdash.json', rows)
+            row['errors'] = validate_job(job, posted, config, dash.rstrip('/').split('/')[-2]); save(self.out/'sparkdash.json', rows)
             if row['errors']:
                 raise RuntimeError('; '.join(row['errors']))
             time.sleep(3.1)
