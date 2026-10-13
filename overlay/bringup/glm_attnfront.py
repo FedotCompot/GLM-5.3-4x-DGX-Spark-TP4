@@ -18,11 +18,46 @@ FLAGS = ('GLM_ATTN_FRONT_PARTS', 'GLM_ATTN_FRONT_NORMS', 'GLM_ATTN_FRONT_ROPE_PA
 CONFIG = None
 COUNTS = dict(parts=0, norms=0, rope_pack=0, parts_fallback=0, norms_fallback=0, rope_fallback=0)
 _HITS = set()
+# (hidden, q rank, kv rank, rope dim, local heads, nope dim, value dim).
+# Admission is explicit; widths/strides passed to operators come from the owner.
+ADMITTED_SHAPES = frozenset({
+    (6144, 2048, 512, 64, 16, 192, 256),
+    (6144, 1536, 512, 64, 16, 192, 256),
+})
+
+
+def owner_shape(owner):
+    return tuple(getattr(owner, name, None) for name in (
+        'hidden_size', 'q_lora_rank', 'kv_lora_rank', 'qk_rope_head_dim',
+        'num_heads', 'qk_nope_head_dim', 'v_head_dim'))
+
+
+def quantized_owner(owner):
+    # Layer zero is unquantized BF16. Quantized MTP may still use stock INT8;
+    # its norms/RoPE are independent of the projection's quantization scheme.
+    return (owner_shape(owner) in ADMITTED_SHAPES
+            and getattr(owner.fused_qkv_a_proj, 'scheme', None) is not None)
+
+
+def nvfp4_owner(owner):
+    layer = owner.fused_qkv_a_proj
+    widths = [owner.q_lora_rank, owner.kv_lora_rank + owner.qk_rope_head_dim]
+    return (owner_shape(owner) in ADMITTED_SHAPES
+            and not getattr(layer, '_use_min_latency_gemm', False)
+            and getattr(layer, 'tp_size', 0) == 1 and getattr(layer, 'bias', None) is None
+            and type(getattr(layer, 'scheme', None)).__name__ == 'AttentionNVFP4'
+            and [p.output_size_per_partition for p in getattr(layer, '_glm_nvfp4_parts', ())] == widths)
+
+
+def parts_eligible(owner, x):
+    return (CONFIG[0] and nvfp4_owner(owner) and x.is_cuda and x.ndim == 2
+            and str(x.dtype) == 'torch.bfloat16' and 1 <= x.shape[0] <= 16
+            and x.shape[-1] == owner.hidden_size)
 
 
 def hit(piece, rows, owner):
     COUNTS[piece] += 1
-    key = (piece, id(owner))
+    key = (piece, rows, id(owner))
     if key not in _HITS:
         _HITS.add(key)
         sys.stderr.write('ATTNFRONT_HIT '+piece+' M'+str(rows)+' '+owner.mla_attn.layer_name+'\n')
@@ -103,14 +138,7 @@ def transform_common(raw):
 
 def partitions(owner, x):
     layer=owner.fused_qkv_a_proj
-    if (CONFIG[0] and x.is_cuda and x.ndim==2 and x.dtype.__str__()=='torch.bfloat16'
-            and 1<=x.shape[0]<=16 and x.shape[-1]==6144
-            and not getattr(layer,'_use_min_latency_gemm',False)
-            and getattr(layer,'tp_size',0)==1 and getattr(layer,'bias',None) is None
-            and type(getattr(layer,'scheme',None)).__name__=='AttentionNVFP4'
-            and hasattr(layer,'_glm_nvfp4_parts')
-            and [p.output_size_per_partition for p in layer._glm_nvfp4_parts]==[1536,576]
-            and owner.q_lora_rank==1536 and owner.kv_lora_rank==512 and owner.qk_rope_head_dim==64):
+    if parts_eligible(owner, x):
         from glm_nvfp4_attn import apply_partitions
         hit('parts',x.shape[0],owner)
         return apply_partitions(layer,x)
@@ -120,13 +148,16 @@ def partitions(owner, x):
 
 
 def norm_eligible(owner,x):
-    ok=(CONFIG[1] and x.is_cuda and x.ndim==2 and x.shape[-1]==6144 and x.dtype.__str__()=='torch.bfloat16'
-        and 1<=x.shape[0]<=16 and owner.q_lora_rank==1536 and owner.kv_lora_rank==512
+    ok=(CONFIG[1] and quantized_owner(owner) and x.is_cuda and x.ndim==2
+        and x.shape[-1]==owner.hidden_size and str(x.dtype)=='torch.bfloat16'
+        and 1<=x.shape[0]<=16
         and not owner.fuse_qkv_rmsnorm
         and type(owner.q_a_layernorm).__name__=='RMSNorm'
         and type(owner.kv_a_layernorm).__name__=='RMSNorm'
         and all(n.pass_weight and n.variance_size_override is None
-                and n.weight.dtype==x.dtype for n in (owner.q_a_layernorm,owner.kv_a_layernorm)))
+                and n.weight.dtype==x.dtype and tuple(n.weight.shape)==(width,)
+                for n,width in ((owner.q_a_layernorm,owner.q_lora_rank),
+                                (owner.kv_a_layernorm,owner.kv_lora_rank))))
     if ok:
         from vllm import ir
         ok=all(ir.ops.rms_norm.dispatch(x,n.weight,n.variance_epsilon,None).provider=='vllm_c'
@@ -148,21 +179,34 @@ def norms(owner,q,k):
     return qo,ko
 
 
-def rope(owner,positions,q,k,x):
-    import torch
+def rope_eligible(owner, q, k, x):
     rotary=owner.rotary_emb
     # This piece covers only the measured native CUDA op, never FlashInfer
     # or DeepseekScaling's out-of-place native Python arithmetic.
     # Read the dispatch CustomOp chose at construction; enabled() needs the
     # vLLM config context, which is not set during forward.
-    native=(getattr(rotary._forward_method,'__name__','')=='forward_cuda' and (type(rotary).__name__=='RotaryEmbedding' and not rotary.use_flashinfer
+    native=(getattr(getattr(rotary,'_forward_method',None),'__name__','')=='forward_cuda' and (type(rotary).__name__=='RotaryEmbedding' and not rotary.use_flashinfer
             or type(rotary).__name__=='DeepseekV4ScalingRotaryEmbedding'))
-    ok=(CONFIG[2] and native and q.is_cuda and q.dtype==torch.bfloat16
-        and 1<=q.shape[0]<=16 and q.shape[1:]==(16,64) and k.shape[1:]==(1,64)
-        and q.stride(0)==4096 and q.stride(1)==256 and k.stride(0) in (576,2112)
-        and rotary.rotary_dim==64 and not owner.dcp_q_replicate
+    return (CONFIG[2] and quantized_owner(owner) and native and q.is_cuda
+        and str(q.dtype)=='torch.bfloat16' and k.dtype==q.dtype and x.dtype==q.dtype
+        and 1<=q.shape[0]<=16 and q.shape[1:]==(owner.num_heads,owner.qk_rope_head_dim)
+        and k.shape==(q.shape[0],1,owner.qk_rope_head_dim)
+        and x.shape==(q.shape[0],owner.kv_lora_rank)
+        and q.stride(0)==owner.num_heads*owner.qk_head_dim
+        and q.stride(1)==owner.qk_head_dim
+        and k.stride(0) in (owner.kv_lora_rank+owner.qk_rope_head_dim,
+                            owner.q_lora_rank+owner.kv_lora_rank+owner.qk_rope_head_dim)
+        and x.stride(0)==owner.kv_lora_rank
+        and all(t.stride(-1)==1 for t in (q,k,x))
+        and rotary.rotary_dim==owner.qk_rope_head_dim and not owner.dcp_q_replicate
         and not owner.mla_attn.use_pcp
         and not getattr(owner.mla_attn.impl,'_glm_recent_bank',None))
+
+
+def rope(owner,positions,q,k,x):
+    import torch
+    rotary=owner.rotary_emb
+    ok=rope_eligible(owner,q,k,x)
     if ok:
         hit('rope_pack',q.shape[0],owner)
         cache=rotary.cos_sin_cache

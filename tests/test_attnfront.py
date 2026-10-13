@@ -45,16 +45,143 @@ class Config(unittest.TestCase):
         self.assertEqual(before,sys.meta_path)
 
 class Reachability(unittest.TestCase):
-    def test_hit_logs_each_attention_owner_once(self):
+    def test_hit_logs_each_attention_owner_and_m_once(self):
         import io,contextlib
         target=types.SimpleNamespace(mla_attn=types.SimpleNamespace(layer_name='target.attn'))
         draft=types.SimpleNamespace(mla_attn=types.SimpleNamespace(layer_name='draft.attn'))
         out=io.StringIO()
         with patch.object(a,'_HITS',set()),patch.object(a,'COUNTS',dict(norms=0)),contextlib.redirect_stderr(out):
-            a.hit('norms',4,target);a.hit('norms',1,target);a.hit('norms',1,draft)
-            self.assertEqual(a.COUNTS['norms'],3)
-        self.assertEqual(len(out.getvalue().splitlines()),2)
+            a.hit('norms',4,target);a.hit('norms',1,target);a.hit('norms',1,target);a.hit('norms',1,draft)
+            self.assertEqual(a.COUNTS['norms'],4)
+        self.assertEqual(len(out.getvalue().splitlines()),3)
         self.assertIn('target.attn',out.getvalue());self.assertIn('draft.attn',out.getvalue())
+
+class HitCoverage(unittest.TestCase):
+    def test_requires_every_target_layer_piece_and_capture_size(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('hits',ROOT/'bench/attnfront_hits.py')
+        hits=importlib.util.module_from_spec(spec);spec.loader.exec_module(hits)
+        lines=['ATTNFRONT_READY']+[f'ATTNFRONT_HIT {p} M{m} model.layers.{i}.self_attn.attn'
+              for p in hits.PIECES for m in range(1,17) for i in range(1,78)]
+        self.assertEqual(hits.check('\n'.join(lines))['required_hits'],3696)
+        for incomplete in (lines[:-1],lines[1:],lines+['ATTNFRONT_HIT norms M1 model.layers.0.self_attn.attn']):
+            with self.assertRaises(ValueError):hits.check('\n'.join(incomplete))
+
+class Eligibility(unittest.TestCase):
+    # Config fields match the serving checkpoint; TP4 gives sixteen local heads.
+    REAL_CONFIG = dict(hidden_size=6144, q_lora_rank=2048, kv_lora_rank=512,
+                       qk_rope_head_dim=64, qk_nope_head_dim=192, v_head_dim=256,
+                       num_attention_heads=64, rms_norm_eps=1e-5, num_hidden_layers=78)
+
+    def fixture(self, m, rank=None):
+        import torch
+        cfg = dict(self.REAL_CONFIG)
+        if rank is not None: cfg['q_lora_rank'] = rank
+        class Tensor:
+            def __init__(self, shape, strides=None):
+                self.shape=tuple(shape); self.ndim=len(shape)
+                self.dtype=torch.bfloat16; self.is_cuda=True
+                self.strides=strides or (shape[-1],1)
+            def stride(self, dim): return self.strides[dim]
+        class RMSNorm:
+            def __init__(self, width):
+                self.pass_weight=True; self.variance_size_override=None
+                self.weight=Tensor((width,)); self.variance_epsilon=cfg['rms_norm_eps']
+        class AttentionNVFP4: pass
+        class Linear:
+            tp_size=1; bias=None
+            scheme=AttentionNVFP4()
+            def __call__(self, x):
+                return torch.zeros((m,cfg['q_lora_rank']+576),dtype=torch.bfloat16),None
+        class RotaryEmbedding:
+            rotary_dim=64; use_flashinfer=False
+            def forward_cuda(self): pass
+            def __call__(self,p,q,k): return q,k
+        layer=Linear()
+        layer._glm_nvfp4_parts=[types.SimpleNamespace(output_size_per_partition=n)
+                               for n in (cfg['q_lora_rank'],576)]
+        rotary=RotaryEmbedding(); rotary._forward_method=rotary.forward_cuda
+        owner=types.SimpleNamespace(**{k:cfg[k] for k in (
+            'hidden_size','q_lora_rank','kv_lora_rank','qk_rope_head_dim',
+            'qk_nope_head_dim','v_head_dim')},num_heads=cfg['num_attention_heads']//4,
+            qk_head_dim=cfg['qk_nope_head_dim']+cfg['qk_rope_head_dim'],
+            fused_qkv_a_proj=layer,q_a_layernorm=RMSNorm(cfg['q_lora_rank']),
+            kv_a_layernorm=RMSNorm(cfg['kv_lora_rank']),fuse_qkv_rmsnorm=False,
+            rotary_emb=rotary,dcp_q_replicate=False,
+            mla_attn=types.SimpleNamespace(layer_name='model.layers.1.self_attn.attn',
+                use_pcp=False,impl=types.SimpleNamespace()))
+        h=Tensor((m,cfg['hidden_size']))
+        q=Tensor((m,owner.num_heads,64),(4096,256,1))
+        x=Tensor((m,512))
+        ks=[Tensor((m,1,64),(rs,64,1)) for rs in (576,cfg['q_lora_rank']+576)]
+        return owner,h,q,ks,x
+
+    def test_real_and_legacy_all_capture_sizes_admitted(self):
+        provider=types.SimpleNamespace(ir=types.SimpleNamespace(ops=types.SimpleNamespace(
+            rms_norm=types.SimpleNamespace(dispatch=lambda *args:types.SimpleNamespace(provider='vllm_c')))))
+        with patch.object(a,'CONFIG',(True,True,True)), patch.object(a,'hit'), patch.dict(sys.modules,vllm=provider):
+            for rank in (self.REAL_CONFIG['q_lora_rank'],1536):
+                for m in range(1,17):
+                    owner,h,q,ks,x=self.fixture(m,rank)
+                    with self.subTest(rank=rank,m=m):
+                        self.assertTrue(a.parts_eligible(owner,h))
+                        self.assertTrue(a.norm_eligible(owner,h))
+                        for k in ks: self.assertTrue(a.rope_eligible(owner,q,k,x))
+                        # All three independently remain admitted with parts OFF.
+                        with patch.object(a,'CONFIG',(False,True,True)):
+                            self.assertTrue(a.norm_eligible(owner,h))
+                            self.assertTrue(a.rope_eligible(owner,q,ks[1],x))
+
+    def test_layer_zero_bf16_falls_back_every_piece_all_m(self):
+        with patch.object(a,'CONFIG',(True,True,True)):
+            for m in range(1,17):
+                owner,h,q,ks,x=self.fixture(m)
+                owner.fused_qkv_a_proj.scheme=None
+                del owner.fused_qkv_a_proj._glm_nvfp4_parts
+                self.assertFalse(a.parts_eligible(owner,h))
+                self.assertFalse(a.norm_eligible(owner,h))
+                for k in ks:
+                    self.assertFalse(a.rope_eligible(owner,q,k,x))
+                    self.assertEqual(a.rope(owner,None,q,k,x),(q,k,None))
+                parts=a.partitions(owner,h)
+                self.assertEqual([tuple(t.shape) for t in parts],[(m,2048),(m,576)])
+
+    def test_int8_mtp_keeps_independent_norms_and_rope(self):
+        provider=types.SimpleNamespace(ir=types.SimpleNamespace(ops=types.SimpleNamespace(
+            rms_norm=types.SimpleNamespace(dispatch=lambda *args:types.SimpleNamespace(provider='vllm_c')))))
+        with patch.object(a,'CONFIG',(True,True,True)), patch.object(a,'hit'), patch.dict(sys.modules,vllm=provider):
+            owner,h,q,ks,x=self.fixture(4)
+            owner.fused_qkv_a_proj.scheme=types.SimpleNamespace()
+            del owner.fused_qkv_a_proj._glm_nvfp4_parts
+            self.assertFalse(a.parts_eligible(owner,h))
+            self.assertTrue(a.norm_eligible(owner,h))
+            self.assertTrue(a.rope_eligible(owner,q,ks[1],x))
+
+    def test_unknown_shape_and_wrong_partition_sizes_refused(self):
+        provider=types.SimpleNamespace(ir=types.SimpleNamespace(ops=types.SimpleNamespace(
+            rms_norm=types.SimpleNamespace(dispatch=lambda *args:types.SimpleNamespace(provider='vllm_c')))))
+        with patch.object(a,'CONFIG',(True,True,True)),patch.object(a,'hit'),patch.dict(sys.modules,vllm=provider):
+            for rank in (1024,2048):
+                owner,h,q,ks,x=self.fixture(4,rank)
+                if rank==2048: owner.fused_qkv_a_proj._glm_nvfp4_parts[0].output_size_per_partition=1536
+                self.assertFalse(a.parts_eligible(owner,h))
+                self.assertEqual(a.norm_eligible(owner,h),rank==2048)
+                self.assertEqual(a.rope_eligible(owner,q,ks[1],x),rank==2048)
+
+    def test_stock_host_selection_and_valid_item_tree_all_m(self):
+        import math
+        stock=(NATIVE/'vendor/layernorm_kernels.cu').read_text()
+        self.assertIn('std::gcd(16 / sizeof(scalar_t), hidden_size)',stock)
+        self.assertIn('std::min(hidden_size / calculated_vec_size, max_block_size)',stock)
+        self.assertIn('((num_tokens < 256) ? 1024 : 256)',stock)
+        for m in range(1,17):
+            for width,threads in ((2048,256),(1536,192),(512,64)):
+                vec=math.gcd(16//2,width)
+                self.assertEqual(vec,8)
+                self.assertEqual(min(width//vec,1024 if m<256 else 256),threads)
+                # Stock thread t consumes vector [8t..8t+7], exactly once.
+                self.assertEqual([i for t in range(threads) for i in range(8*t,8*t+8)],list(range(width)))
+                self.assertEqual(threads//32,{2048:8,1536:6,512:2}[width])
 
 class Sources(unittest.TestCase):
     def test_vendor_pins(self):
@@ -90,7 +217,7 @@ class Sources(unittest.TestCase):
         self.assertEqual(replica,original)
     def test_rms_logical_thread_guard(self):
         source=(NATIVE/'dual_rms.cu').read_text()
-        self.assertIn('<<<2*m,192,0',source)
+        self.assertIn('<<<2*m,q.size(1)/VEC_SIZE,0',source)
         self.assertIn('hidden_size / VEC_SIZE',source)
         self.assertIn('if (threadIdx.x < logical_threads)',source)
         self.assertIn('.Reduce(variance, CubAddOp{}, logical_threads)',source)
@@ -135,7 +262,7 @@ class Partitions(unittest.TestCase):
         import glm_nvfp4_attn as nv
         for m in range(1,17):
             parts=[types.SimpleNamespace(weight=i,weight_scale=i+3,weight_global_scale=torch.tensor(g),workspace=i+7,
-                output_size_per_partition=n,input_size_per_partition=6144) for i,(g,n) in enumerate(((.01,1536),(.07,576)))]
+                output_size_per_partition=n,input_size_per_partition=6144) for i,(g,n) in enumerate(((.01,2048),(.07,576)))]
             layer=types.SimpleNamespace(_glm_nvfp4_parts=parts)
             x=torch.zeros((m,6144),dtype=torch.bfloat16)
             calls=[];outs=[]
@@ -144,7 +271,7 @@ class Partitions(unittest.TestCase):
             fused=nv.apply_partitions(layer,x,apply)
             self.assertEqual(len(calls),2)
             self.assertIs(fused[0],outs[0]);self.assertIs(fused[1],outs[1])
-            reference=nv.apply_layer(layer,x,apply=apply).split([1536,576],-1)
+            reference=nv.apply_layer(layer,x,apply=apply).split([2048,576],-1)
             for actual,expected in zip(fused,reference):
                 self.assertTrue(torch.equal(actual.view(torch.uint8),expected.contiguous().view(torch.uint8)))
             self.assertEqual([float(c['weight_global_scale']) for c in calls[:2]],[float(p.weight_global_scale) for p in parts])
@@ -165,7 +292,7 @@ class Dry(unittest.TestCase):
             for mode in ('int8','nvfp4'):
                 cfg=Path(tmp)/(mode+'.env')
                 cfg.write_text((ROOT/'tests/fixtures/legacy-dry.env').read_text()+
-                    '\nGLM_MARLIN_L2HINT=off\nGLM_ATTN_FRONT_FUSE=0\nGLM_ATTN_FRONT_NORMS=bad\nGLM_ATTN_WEIGHTS='+mode+'\nGLM_NVFP4_GROUPS=attn\n')
+                    '\nGLM_MARLIN_L2HINT=off\nGLM_ATTN_FRONT_FUSE=0\nGLM_ATTN_FRONT_NORMS=bad\nGLM_ATTN_FRONT_CAPTURE_SWEEP=bad\nGLM_ATTN_WEIGHTS='+mode+'\nGLM_NVFP4_GROUPS=attn\n')
                 env=dict(os.environ,DRY='1',CTN='glm53full-attnfront-dry',RECIPE_CONFIG=str(cfg),GLM_MARLIN_L2HINT='off')
                 commands=[]
                 for tree in (base,ROOT):
@@ -209,8 +336,8 @@ class Flow(unittest.TestCase):
         for m in range(1,17):
             torch.manual_seed(m)
             h=torch.randn((m,6144),dtype=torch.bfloat16)
-            projected=torch.randn((m,2112),dtype=torch.bfloat16)
-            weightq=torch.randn(1536,dtype=torch.bfloat16);weightk=torch.randn(512,dtype=torch.bfloat16)
+            projected=torch.randn((m,2624),dtype=torch.bfloat16)
+            weightq=torch.randn(2048,dtype=torch.bfloat16);weightk=torch.randn(512,dtype=torch.bfloat16)
             def norm(x,w,eps):
                 f=x.float();return (f*torch.rsqrt((f*f).mean(-1,keepdim=True)+eps)*w.float()).bfloat16()
             for mask in range(8):
@@ -219,8 +346,8 @@ class Flow(unittest.TestCase):
                 def attention(q,k,r,**kw):
                     observed['cache_norm']=k.clone();observed['k_rope']=r.clone();observed['dependency']=kw.get('attnfront_dep')
                     return k
-                owner=types.SimpleNamespace(q_lora_rank=1536,kv_lora_rank=512,qk_rope_head_dim=64,
-                    fused_qkv_a_proj=lambda x:(projected,None),q_a_layernorm=lambda x:norm(x,weightq,1e-6),
+                owner=types.SimpleNamespace(q_lora_rank=2048,kv_lora_rank=512,qk_rope_head_dim=64,
+                    fused_qkv_a_proj=lambda x:(projected,None),q_a_layernorm=lambda x:norm(x,weightq,1e-5),
                     kv_a_layernorm=lambda x:norm(x,weightk,1e-5),q_b_proj=linear,fuse_qkv_rmsnorm=False,
                     num_heads=16,dcp_q_replicate=False,qk_head_dim=256,qk_nope_head_dim=192,v_head_dim=256,
                     rotary_emb=lambda p,q,k:(q,k),indexer=lambda h,q,p,r:observed.update(indexer_q=q.clone()),
@@ -228,8 +355,8 @@ class Flow(unittest.TestCase):
                 ns={'torch':torch};fns={};exec(compile(old,'stock','exec'),ns,fns)
                 expected=fns['forward'](owner,torch.arange(m),h).clone();baseline=dict(observed);observed.clear()
                 ns.update(_af_norm_eligible=lambda owner,x:bool(mask&2),
-                    _af_partitions=lambda owner,x: projected.split([1536,576],-1) if not mask&1 else (projected[:,:1536].contiguous(),projected[:,1536:].contiguous()),
-                    _af_norms=lambda owner,q,k:(norm(q,weightq,1e-6),norm(k,weightk,1e-5)),
+                    _af_partitions=lambda owner,x: projected.split([2048,576],-1) if not mask&1 else (projected[:,:2048].contiguous(),projected[:,2048:].contiguous()),
+                    _af_norms=lambda owner,q,k:(norm(q,weightq,1e-5),norm(k,weightk,1e-5)),
                     _af_rope=lambda owner,p,q,k,x:(q,k,torch.empty(0) if mask&4 else None))
                 exec(compile(new,'fused','exec'),ns,fns)
                 result=fns['forward'](owner,torch.arange(m),h)

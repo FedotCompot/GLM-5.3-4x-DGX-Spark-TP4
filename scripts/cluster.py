@@ -277,6 +277,20 @@ def launch_shape(args):
         kv_bytes = kstop_layout(switches)['kv_bytes']
     args[args.index('--max-model-len') + 1] = switches['RECIPE_MAX_MODEL_LEN']
     args[args.index('--kv-cache-memory-bytes') + 1] = str(kv_bytes)
+    # Diagnostic B boot only: coverage of every admitted M, preserving mode,
+    # KV pool, K-stop and sequence/context limits. OFF ignores this control.
+    if ENV.get('GLM_ATTN_FRONT_FUSE', '0') == '1':
+        sweep = ENV.get('GLM_ATTN_FRONT_CAPTURE_SWEEP', '0')
+        if sweep not in ('0', '1'):
+            raise ValueError('GLM_ATTN_FRONT_CAPTURE_SWEEP must be 0 or 1')
+        if sweep == '1':
+            i = args.index('--compilation-config') + 1
+            config = json.loads(args[i])
+            if config.get('mode') != 0 or config.get('cudagraph_mode') != 'FULL_DECODE_ONLY':
+                raise ValueError('attention front sweep requires NONE/FULL_DECODE_ONLY')
+            config['cudagraph_capture_sizes'] = list(range(1, 17))
+            config['max_cudagraph_capture_size'] = 16
+            args[i] = json.dumps(config)
     return args
 
 

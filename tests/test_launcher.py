@@ -27,6 +27,24 @@ def samples():
 
 
 class Launcher(unittest.TestCase):
+    def test_attnfront_capture_sweep_on_and_ignored_off(self):
+        args=json.loads((ROOT/'profiles/serve-args.json').read_text())
+        self.enterContext(patch.object(C,'launch_switches',return_value=dict(C.LAUNCH_DEFAULTS,GLM_MTP_KSTOP='1')))
+        env=dict(RECIPE_PROFILE='native-mtp-k2',GLM_KV_FORMAT='fp8',
+            GLM_MTP_KSTOP='1',GLM_MTP_KSTOP_UNIFORM_BATCH='k2',GLM_ATTN_FRONT_FUSE='0')
+        with patch.dict(C.ENV,env): baseline=C.launch_shape(args)
+        with patch.dict(C.ENV,dict(env,GLM_ATTN_FRONT_CAPTURE_SWEEP='bad')):
+            self.assertEqual(C.launch_shape(args),baseline)
+        with patch.dict(C.ENV,dict(env,GLM_ATTN_FRONT_FUSE='1',GLM_ATTN_FRONT_CAPTURE_SWEEP='1')):
+            swept=C.launch_shape(args)
+        i=swept.index('--compilation-config')+1
+        before=json.loads(baseline[i]);after=json.loads(swept[i])
+        self.assertEqual(after['cudagraph_capture_sizes'],list(range(1,17)))
+        after['cudagraph_capture_sizes']=before['cudagraph_capture_sizes']
+        after['max_cudagraph_capture_size']=before['max_cudagraph_capture_size']
+        self.assertEqual(after,before)
+        swept[i]=baseline[i];self.assertEqual(swept,baseline)
+
     def test_indexer_row_shard_controls_all_ranks_and_default_off(self):
         self.assertFalse(any(k.startswith('GLM_INDEXER_ROW_SHARD') for k in C.optional_env()))
         profile={key:'v-'+key for key in C.PROFILE_KEYS}

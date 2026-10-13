@@ -74,35 +74,44 @@ def main():
     # checked with separate weights/eps and both input row strides.
     for m in range(1,17):
         for layout in ('partition','cat'):
-            src=torch.randn(m,2112,device='cuda',dtype=torch.bfloat16)
-            q=src[:,:1536] if layout=='cat' else src[:,:1536].contiguous()
-            kv=src[:,1536:] if layout=='cat' else src[:,1536:].contiguous()
+            src=torch.randn(m,2624,device='cuda',dtype=torch.bfloat16)
+            # M1 slices count as contiguous despite retaining cat row stride;
+            # allocate tuple outputs explicitly to time the real partition ABI.
+            q=src[:,:2048] if layout=='cat' else torch.empty((m,2048),device='cuda',dtype=torch.bfloat16)
+            kv=src[:,2048:] if layout=='cat' else torch.empty((m,576),device='cuda',dtype=torch.bfloat16)
+            if layout=='partition':q.copy_(src[:,:2048]);kv.copy_(src[:,2048:])
+            assert q.stride(0)==(2624 if layout=='cat' else 2048)
+            assert kv.stride(0)==(2624 if layout=='cat' else 576)
             k=kv[:,:512]
-            qw=torch.randn(1536,device='cuda',dtype=torch.bfloat16);kw=torch.randn(512,device='cuda',dtype=torch.bfloat16)
+            qw=torch.randn(2048,device='cuda',dtype=torch.bfloat16);kw=torch.randn(512,device='cuda',dtype=torch.bfloat16)
             qs,ks=torch.empty_like(q,memory_format=torch.contiguous_format),torch.empty_like(k,memory_format=torch.contiguous_format)
             qf,kf=torch.empty_like(qs),torch.empty_like(ks)
-            def stock():ops.rms_norm(qs,q,qw,1e-6);ops.rms_norm(ks,k,kw,1e-5)
-            def fused():torch.ops.glm_attnfront.dual_rms(q,k,qw,kw,1e-6,1e-5,qf,kf)
+            qe,ke=1e-5,1e-5  # real checkpoint; also test independent eps below
+            def stock():ops.rms_norm(qs,q,qw,qe);ops.rms_norm(ks,k,kw,ke)
+            def fused():torch.ops.glm_attnfront.dual_rms(q,k,qw,kw,qe,ke,qf,kf)
             def check():bytes_equal(qs,qf,'q norm');bytes_equal(ks,kf,'kv norm')
             stock();fused();check()
+            qe,ke=1e-6,1e-5;stock();fused();check();qe,ke=1e-5,1e-5
             for vals in (0.,-0.,1.,256.,2**-20):
                 q.fill_(vals);k.fill_(vals);stock();fused();check()
             q.copy_(torch.randn_like(q));k.copy_(torch.randn_like(k))
             for item in real:
-                if item['q_a'].shape[0]==m:
+                if tuple(item['q_a'].shape)==(m,2048):
                     q.copy_(item['q_a']);k.copy_(item['kv_a']);stock();fused();check()
-            timing=bench_pair(stock,fused,lambda i=0:None,check,scrub,args.reps)
-            records.append(dict(piece='norms',m=m,layout=layout,byte_equal=True,timing=timing))
+            bq,bk=q.clone(),k.clone();aq,ak=torch.randn_like(q),torch.randn_like(k)
+            def reset_norm(i=0):q.copy_(bq if i%2==0 else aq);k.copy_(bk if i%2==0 else ak)
+            timing=bench_pair(stock,fused,reset_norm,check,scrub,args.reps)
+            records.append(dict(piece='norms',m=m,q_width=2048,kv_width=512,layout=layout,byte_equal=True,timing=timing))
         for cache_dtype in (torch.bfloat16,torch.float32):
             for neox in (False,True):
-                for rs in (576,2112):
+                for rs in (576,2624):
                     baseq=torch.randn(m,16,256,device='cuda',dtype=torch.bfloat16)
                     basek=torch.randn(m,rs,device='cuda',dtype=torch.bfloat16)
                     baseq[...,192:]=torch.randn(m,16,64,device='cuda',dtype=torch.bfloat16)
                     x=torch.randn(m,512,device='cuda',dtype=torch.bfloat16)
                     qbs,qbf=baseq.clone(),baseq.clone();kbs,kbf=basek.clone(),basek.clone()
                     qs,qf=qbs[...,192:],qbf[...,192:]
-                    offset=512 if rs==576 else 2048
+                    offset=512 if rs==576 else 2560
                     ks,kf=kbs[:,offset:offset+64].unsqueeze(1),kbf[:,offset:offset+64].unsqueeze(1)
                     c=caches[cache_dtype]
                     basepos=position_cases[torch.arange(m,device='cuda')%position_cases.numel()]
@@ -133,7 +142,7 @@ def main():
                     timing=bench_pair(stock,fused,reset,check,scrub,args.reps)
                     records.append(dict(piece='rope_pack',m=m,rs=rs,cache_dtype=str(cache_dtype),neox=neox,byte_equal=True,timing=timing))
                     (args.out/'partial.json').write_text(json.dumps(records,indent=2)+'\n')
-    layer=torch.nn.Module();layer.logical_widths=[1536,576];layer.output_size_per_partition=2112
+    layer=torch.nn.Module();layer.logical_widths=[2048,576];layer.output_size_per_partition=2624
     layer.input_size_per_partition=6144;layer.params_dtype=torch.bfloat16
     # Actual stock repack/Marlin, two deliberately unequal FP32 globals.
     packed=[];scales=[];globals=[.0001,.0007]
@@ -148,14 +157,16 @@ def main():
     nv.prepare_layer(layer)
     for m in range(1,17):
         x=torch.randn(m,6144,device='cuda',dtype=torch.bfloat16);results={}
-        def stock():results['stock']=nv.apply_layer(layer,x).split([1536,576],-1)
+        def stock():results['stock']=nv.apply_layer(layer,x).split([2048,576],-1)
         def fused():results['fused']=nv.apply_partitions(layer,x)
         def check():
             for i in range(2):bytes_equal(results['stock'][i],results['fused'][i],'Marlin partition '+str(i))
         # Graph captures allocate their own outputs; bind them immediately.
         # bench_pair's check dictionary points to each capture's fixed output.
-        timing=bench_pair(stock,fused,lambda i=0:None,check,scrub,args.reps)
-        records.append(dict(piece='parts',m=m,byte_equal=True,timing=timing))
+        bx,ax=x.clone(),torch.randn_like(x)
+        def reset_parts(i=0):x.copy_(bx if i%2==0 else ax)
+        timing=bench_pair(stock,fused,reset_parts,check,scrub,args.reps)
+        records.append(dict(piece='parts',m=m,widths=[2048,576],byte_equal=True,timing=timing))
     summary=dict(status='PASS',device=props.name,sm=props.multi_processor_count,
       torch=torch.__version__,cuda=torch.version.cuda,elapsed_s=time.monotonic()-started,records=records,
       real_input_rows=len(real),real_input_sha256=None if args.real_inputs is None else hashlib.sha256(args.real_inputs.read_bytes()).hexdigest(),

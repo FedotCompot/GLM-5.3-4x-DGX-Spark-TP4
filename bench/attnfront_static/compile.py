@@ -19,10 +19,10 @@ a.register_ops()
 from torch._subclasses.fake_tensor import FakeTensorMode
 with FakeTensorMode():
     for m in range(1,17):
-        q=torch.empty((m,1536),device='cuda',dtype=torch.bfloat16)
+        q=torch.empty((m,2048),device='cuda',dtype=torch.bfloat16)
         k=torch.empty((m,512),device='cuda',dtype=torch.bfloat16)
-        torch.ops.glm_attnfront.dual_rms(q,k,torch.empty(1536,device='cuda',dtype=q.dtype),
-             torch.empty(512,device='cuda',dtype=q.dtype),1e-6,1e-5,torch.empty_like(q),torch.empty_like(k))
+        torch.ops.glm_attnfront.dual_rms(q,k,torch.empty(2048,device='cuda',dtype=q.dtype),
+             torch.empty(512,device='cuda',dtype=q.dtype),1e-5,1e-5,torch.empty_like(q),torch.empty_like(k))
         r=torch.empty((m,16,64),device='cuda',dtype=q.dtype)
         kr=torch.empty((m,1,64),device='cuda',dtype=q.dtype)
         dep=torch.ops.glm_attnfront.rope_update(r,kr,k,torch.empty(m,device='cuda',dtype=torch.int64),

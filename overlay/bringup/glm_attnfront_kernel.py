@@ -76,7 +76,7 @@ def rope_pack(q, k, x, cache, positions, cos_sin, slots, scale, neox):
     m = x.shape[0]
     if not 1 <= m <= 16 or q.shape != (m,16,64) or k.shape != (m,1,64) or x.shape != (m,512):
         raise ValueError('attention front requires M1..16/H16/D512/R64')
-    if (q.stride(0)!=4096 or q.stride(1)!=256 or k.stride(0) not in (576,2112)
+    if (q.stride(0)!=4096 or q.stride(1)!=256 or k.stride(0) not in (576,2112,2624)
             or x.stride(0)!=512 or any(a.stride(-1)!=1 for a in (q,k,x))):
         raise ValueError('attention front requires measured q/k/latent strides')
     if positions.dtype != torch.int64 or positions.shape != (m,) or not positions.is_contiguous():

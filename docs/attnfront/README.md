@@ -10,12 +10,25 @@ OFF installs no hooks, loads no native library, and preserves the original
 Only released NVFP4/FP4x/Triton MLA is admitted. Recent-KV, merged NVFP4,
 weight simulation, Marlin atomic reduction, and batch-invariant norms are
 refused. Dimensions/layouts outside the M1..16/H16/D512/R64 path use stock.
+Admission enumerates `(hidden,q_rank,kv_rank,rope,local_heads,nope,value)` as
+`(6144,2048,512,64,16,192,256)` and legacy q1536. Predicates derive partition
+widths, q strides and k strides from module attributes. Real partitions are
+`[2048,576]`; stock cat k stride is2624, tuple k stride576. Layer0's unquantized
+BF16 projection keeps all three pieces stock. Quantized INT8 MTP keeps its stock
+projection but may use independently admitted norms/RoPE.
+`GLM_ATTN_FRONT_CAPTURE_SWEEP=1` with the master ON selects capture sizes1..16
+for a diagnostic B boot only, retaining compilation mode0/FULL_DECODE_ONLY,
+KV capacity, context and K-stop. OFF ignores this control. The usual four-size
+capture config cannot establish every-M serving reachability. Run
+`bench/attnfront_hits.py --worker r0=LOG0 ... --worker r3=LOG3 --out FILE` to
+require all77 target layers, all16 sizes and all3 pieces on each worker.
+
 The optional indexer fusion is not implemented: no independent byte proof
 has been established for its layernorm/quantization sequence.
 
 Build once in the local pinned image using `./start.sh attnfront-setup`.
 Each enabled worker logs `ATTNFRONT_READY`; the first eligible use of each
-piece per attention owner logs `ATTNFRONT_HIT parts|norms|rope_pack M<rows> <layer-name>`. Missing expected hits is a HOLD.
+piece per attention owner and row count logs `ATTNFRONT_HIT parts|norms|rope_pack M<rows> <layer-name>`. Missing expected hits is a HOLD.
 No GPU/network/build container removal; the binary, source hashes, ABI and
 stock provider hashes are checked before enabled native loading. The launcher
 checks source/binary receipts before taking the serving path. The usual overlay
@@ -47,13 +60,18 @@ remain distinct; no re-quantization, combined Marlin grid or accumulation change
 Norms: vendor `layernorm_kernels.cu:14–102` is reproduced from the first vector
 operation to the final vector store, checked textually by the CPU suite. Stock
 host lines 253–293 select BF16, vector width 8, rank 2, HasWeight=true and block
-sizes 192 (1536/8) and 64 (512/8) at M1..16. One physical 192-thread block per
-row launches across 2*M independent rows. The KV row's *logical* thread stride
-and CUB valid-items parameter remain 64. Threads 64–191 contribute no input and
+sizes 256 (2048/8) and 64 (512/8) at M1..16. The admitted legacy q1536
+uses 192 threads. One physical q_width/8-thread block per row launches across
+2*M independent rows. The KV row's *logical* thread stride
+and CUB valid-items parameter remain 64. Threads 64–255 (legacy: 64–191) contribute no input and
 participate in barriers; their aggregates are ignored. CUB's pinned
 `block_reduce_warp_reductions.cuh`, `ApplyWarpAggregates` lines 138–195, reads a
 successor warp only when `warp*32 < num_valid`; only warps 0 and 1 contribute
-for KV, exactly as stock. Q uses all six warps. Same per-thread eight-term FP32
+for KV, exactly as stock. Q2048 uses all eight warps (legacy: six). Within each warp the pinned
+shuffle tree uses offsets1,2,4,8,16. Thread0 then folds warp aggregates in
+ascending order1..7 for q2048,1..5 for legacy q1536, and only1 for KV; the
+valid-items guard skips all later aggregates, including padded KV warps.
+Same per-thread eight-term FP32
 sum, `cub::BlockReduce<float,1024>`, CubAddOp, warp shuffles/warp aggregate order,
 `rsqrtf(variance/hidden_size+epsilon)`, FP32 x*inverse*weight, and one BF16 RNE
 cast. Q and KV have separate epsilon/weight pointers. Hidden widths are runtime

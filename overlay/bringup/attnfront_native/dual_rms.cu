@@ -84,16 +84,18 @@ void dual_rms(const torch::stable::Tensor& q, const torch::stable::Tensor& k,
     STD_TORCH_CHECK(t.stride(-1)==1);
   }
   const int m=q.size(0);
-  STD_TORCH_CHECK(m>=1 && m<=16 && k.size(0)==m && q.size(1)==1536 && k.size(1)==512);
+  STD_TORCH_CHECK(m>=1 && m<=16 && k.size(0)==m && (q.size(1)==2048 || q.size(1)==1536) && k.size(1)==512);
   STD_TORCH_CHECK(q.stride(0)%8==0 && k.stride(0)%8==0);
-  STD_TORCH_CHECK(qw.dim()==1 && kw.dim()==1 && qw.numel()==1536 && kw.numel()==512);
+  STD_TORCH_CHECK(qw.dim()==1 && kw.dim()==1 && qw.numel()==q.size(1) && kw.numel()==k.size(1));
   STD_TORCH_CHECK(qo.sizes()==q.sizes() && ko.sizes()==k.sizes() && qo.is_contiguous() && ko.is_contiguous());
   const torch::stable::accelerator::DeviceGuard guard(q.get_device_index());
-  dual_rms_kernel<<<2*m,192,0,get_current_cuda_stream()>>>(
+  // Stock BF16 vec=gcd(8,width)=8; M<256 -> cap1024.
+  // Physical q_width/8; CUB valid-items q_width/8 or kv_width/8.
+  dual_rms_kernel<<<2*m,q.size(1)/VEC_SIZE,0,get_current_cuda_stream()>>>(
     reinterpret_cast<scalar_t*>(qo.data_ptr()),reinterpret_cast<scalar_t*>(ko.data_ptr()),
     reinterpret_cast<const scalar_t*>(q.data_ptr()),reinterpret_cast<const scalar_t*>(k.data_ptr()),
     reinterpret_cast<const scalar_t*>(qw.data_ptr()),reinterpret_cast<const scalar_t*>(kw.data_ptr()),
-    q.stride(0), k.stride(0), float(qe),float(ke),m,1536,512);
+    q.stride(0), k.stride(0), float(qe),float(ke),m,q.size(1),k.size(1));
   STD_TORCH_CHECK(cudaGetLastError()==cudaSuccess,"attention front CUDA launch failed");
 }
 STABLE_TORCH_LIBRARY_FRAGMENT(glm_attnfront, m) {

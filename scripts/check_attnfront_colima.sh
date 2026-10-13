@@ -16,7 +16,7 @@ python3 - "$OUT/manifest.json" <<'PY'
 import json,sys
 triton=[]
 for dtype in ('bf16','fp32'):
- for rs in (576,2112):
+ for rs in (576,2112,2624):
   for neox in (False,True):
    for pack in (False,True):
     triton.append(dict(name=f'rope-pack-{dtype}-rs{rs}-neox{int(neox)}-pack{int(pack)}',
@@ -24,7 +24,7 @@ for dtype in ('bf16','fp32'):
       signature=dict(Q='*bf16',R='*bf16',X='*bf16',C='*'+dtype,P='*i64',KV='*u8',SLOTS='*i64',SCALE='*fp32',N='i32',NS='i32'),
       constants=dict(QS=4096,QH=256,RS=rs,XS=512,KS=368,H=16,NEOX=neox,PACK=pack),
       options=dict(num_warps=4,num_stages=1,enable_fp_fusion=False)))
-json.dump(dict(triton=triton,commands=[dict(name='dual-rms',argv=['python3','-B','{package}/bench/attnfront_static/compile.py','{out}'],binary='{out}/native/attnfront.so',threads=192,dynamic_shared=0)]),open(sys.argv[1],'w'),indent=2)
+json.dump(dict(triton=triton,commands=[dict(name='dual-rms',argv=['python3','-B','{package}/bench/attnfront_static/compile.py','{out}'],binary='{out}/native/attnfront.so',threads=256,dynamic_shared=0),dict(name='dual-rms-legacy192',argv=['true'],binary='{out}/native/attnfront.so',threads=192,dynamic_shared=0)]),open(sys.argv[1],'w'),indent=2)
 PY
 IMAGE=sha256:4def0ef644cb2e9814136dcffd5e385e21bc594f48f3b292234051904abe85a6
 NAME="gb10check-attnfront-$(date +%Y%m%d%H%M%S)-$$"
