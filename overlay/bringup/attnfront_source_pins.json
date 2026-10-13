@@ -1,0 +1,12 @@
+{
+  "vllm.model_executor.layers.mla": "936b06c4671d52fce52ae85bb24b986db17855f32740bf55b226053fc385c4b4",
+  "vllm.model_executor.layers.attention.mla_attention": "a309ca752b01e85360b268fba56245b816ff245340e9e361166ee96b99d93a94",
+  "vllm.model_executor.layers.attention.attention": "00f45ec28ff487ead874b53ba90f4bce293a0a0213c94296081cd5b1cc158f35",
+  "vllm.model_executor.layers.linear": "fc4e96ba5e36895513b801b99e746e2b07959d402e36d56aae7d8ad3f124cfe7",
+  "vllm.model_executor.layers.layernorm": "3460eba01758849027bb59b8592626406e33ab25b23d2def729bb0ec42afce67",
+  "vllm.model_executor.layers.rotary_embedding.base": "c81804498f08f072356a26b41967f211475df2694dabf5da9f488c074d1fdef5",
+  "vllm.model_executor.layers.rotary_embedding.deepseek_scaling_rope": "b6b72b77ac71e69bfefe7a9b1bcc0c1518679adc37eb5082685cc75450741c63",
+  "vllm.ir.op": "fd0355b398c0d96235bb6aba0c9c08f73c199429bd8ec2aed227178c297c1eb2",
+  "vllm.ir.ops.layernorm": "65d33dcb96404ddde273acf84ef901151a8155a2cffc144bdd0c49fe1d576a22",
+  "vllm.kernels.vllm_c": "ef37e71736807026f0b8ad187155b63f147984c03d287a78790ef8f8ed642ec1"
+}

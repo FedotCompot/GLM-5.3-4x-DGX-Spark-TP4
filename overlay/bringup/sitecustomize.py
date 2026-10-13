@@ -9,6 +9,9 @@ try:
     if os.environ.get('GLM_ATTN_WEIGHTS', 'int8') == 'nvfp4':
         import glm_nvfp4_attn
         glm_nvfp4_attn.register()
+    if os.environ.get('GLM_ATTN_FRONT_FUSE', '0') != '0':
+        import glm_attnfront
+        glm_attnfront.register()
     if os.environ.get('GLM_PARAM_HASH', '0') != '0':
         import glm_param_hash
         glm_param_hash.register()

@@ -1,0 +1,12 @@
+{
+  "commit": "487ecf187d3dfe74d2cf6119a92881dba403c219",
+  "files": {
+    "csrc/libtorch_stable/layernorm_kernels.cu": "2041b5da8fa2e2868c1ef6133a46d4ae85ffdbc599a8a5da0c5e66cb91c573f6",
+    "csrc/libtorch_stable/pos_encoding_kernels.cu": "baed8e314eef6b1c9e8e8c4fa72428dc6c0fc4c885d021025250c101ae192f7b",
+    "csrc/libtorch_stable/cub_helpers.h": "91bd3c5f862387c475806a13245f0353369439a4e83962d2798e820314c48c31",
+    "csrc/libtorch_stable/quantization/vectorization_utils.cuh": "991d501211c90a6a5c88d1062723b04c73ca1418d84f8aa07e255bd97128dff8",
+    "csrc/libtorch_stable/quantization/vectorization.cuh": "6b28cf0cfe9e948c989274adbfa46c6cdec393bf245efb49678213eca15171e7",
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "csrc/libtorch_stable/torch_utils.h": "f619e1943039a67a3254f7e0679e1f3e0faa9d8fccae795f3b20df9e91a8a429"
+  }
+}

@@ -379,6 +379,14 @@ def optional_env():
             env.update(GLM_MARLIN_L2HINT_AB='1', VLLM_SERVER_DEV_MODE='1')
         else:
             env['GLM_MARLIN_L2HINT'] = 'on'
+    if ENV.get('GLM_ATTN_FRONT_FUSE', '0') != '0':
+        from glm_attnfront import options as attnfront_options, FLAGS as attnfront_flags
+        attnfront = attnfront_options(ENV)
+        if attnfront is not None:
+            env['GLM_ATTN_FRONT_FUSE'] = '1'
+            for key, value in zip(attnfront_flags, attnfront):
+                if key in ENV:
+                    env[key] = '1' if value else '0'
     from glm_draft_ehproj_config import options as ehproj_options
     from glm_mtp_rowselect_config import options as rowselect_options
     if rowselect_options(ENV):
@@ -1245,6 +1253,10 @@ def main():
             raise ValueError('dispram-setup needs RECIPE_DISPRAM=1/auto or require')
         hook.setup(HOSTS, ENV, ROOT)
         return
+    if command == 'attnfront-setup':
+        out = ROOT / 'logs' / ('attnfront-build-' + time.strftime('%Y%m%d-%H%M%S'))
+        subprocess.run(['bash', str(ROOT / 'scripts/build_attnfront.sh'), str(out)], check=True)
+        return
     if command == 'l2hint-setup':
         l2hint_setup()
         return
@@ -1253,6 +1265,15 @@ def main():
         return
     if command == 'serve':
         l2hint_installed()
+        if ENV.get('GLM_ATTN_FRONT_FUSE', '0') != '0':
+            sys.path.insert(0, str(ROOT / 'overlay/bringup'))
+            from glm_attnfront import options
+            if options(ENV)[1]:
+                native = ROOT / 'overlay/bringup/attnfront_native'
+                receipt = json.loads((native / 'build/build.json').read_text())
+                from attnfront_native.build import sources
+                if receipt['sources'] != sources() or receipt['binary_sha256'] != hashlib.sha256((native / 'build/attnfront.so').read_bytes()).hexdigest():
+                    raise RuntimeError('attention front build drift; run ./start.sh attnfront-setup')
         if kstop_note():
             print(kstop_note(), flush=True)
         print(floors, flush=True)

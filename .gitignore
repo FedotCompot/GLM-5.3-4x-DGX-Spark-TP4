@@ -13,3 +13,6 @@ tests/memory-results.json
 image-source/
 overlay/guard/*.so
 overlay/l2hint-serving/
+
+# Local attention-front CUDA artifacts
+overlay/bringup/attnfront_native/build/

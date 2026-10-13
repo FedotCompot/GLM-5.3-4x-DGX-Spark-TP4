@@ -99,6 +99,20 @@ def apply_layer(layer,x,bias=None,apply=None):
     return torch.cat(outputs,dim=-1)
 
 
+def apply_partitions(layer,x,apply=None):
+    """1A: same two Marlin calls/scales, return their allocations directly."""
+    import torch
+    if x.dtype != torch.bfloat16 or not hasattr(layer,'_glm_nvfp4_parts'):
+        raise ValueError('attention front partitions require prepared BF16 NVFP4')
+    if apply is None:
+        from vllm.model_executor.layers.quantization.utils.marlin_utils_fp4 import apply_fp4_marlin_linear
+        apply=apply_fp4_marlin_linear
+    return tuple(apply(input=x,weight=p.weight,weight_scale=p.weight_scale,
+        weight_global_scale=p.weight_global_scale,workspace=p.workspace,
+        size_n=p.output_size_per_partition,size_k=p.input_size_per_partition,
+        bias=None,input_dtype=None,use_fp32_reduce=True) for p in layer._glm_nvfp4_parts)
+
+
 def new_scheme():
     from vllm.model_executor.layers.quantization.compressed_tensors.schemes.compressed_tensors_w4a4_nvfp4 import CompressedTensorsW4A4Fp4
     class AttentionNVFP4(CompressedTensorsW4A4Fp4):
