@@ -126,6 +126,32 @@ measured TP8 collectives eat the weight-streaming gain.
 - Twice the nodes double the failure domain, the boot-time weight verification and the fabric to configure.
 - The gate and bench tooling is TP4-only; a TP8 release gate needs it generalised first.
 
+## Using it
+
+```bash
+# .env: RECIPE_TP_SIZE=8, eight HOSTS, eight IPS (rank order), optional eight IMAGES / NCCL_SHA256
+DRY=1 ./start.sh serve       # eight rank vectors, TP 8, nnodes 8, 16,394-block K-stop layout
+python3 scripts/topology.py 8
+```
+
+## Verification status
+
+Verified on a CPU workstation (no Spark attached):
+
+- `tests/test_topology.py`: model constants match the pinned config, partition legality at TP4/TP8/TP16/TP32,
+  the TP4 pool reproduces 4,135 blocks, the TP8 head is the smallest 2 MiB head for four full contexts.
+- `tests/test_launcher_tp8.py`: `start.sh` layering, eight rendered rank vectors, TP4 vector byte-identical,
+  host/NCCL-hash counts, TP4-only lever refusals, context cap at `max_position_embeddings`.
+- `tests/test_mla_heads.py` (Triton interpreter): the H8 dispatch equals the first eight heads of the released
+  H16 kernels bit for bit (FP8/BF16 split and unsplit, FP4x split and unsplit) and routes like the release.
+  The interpreter's BF16 `tl.dot` is not numerically faithful, so this proves indexing, not GB10 numerics.
+- `tests/test_tp8_overlay.py`: TP admission in K-stop, MTP experts, DSA shortcut; row-shard/stable top-k stay TP4.
+- `tests/test_boot_preflight.py`: world size and ranks from the DRY vector.
+- `roce/tests/test_glm_roce_cpu.py`: RoCEnante vote, fail-together and routing over eight gloo ranks.
+
+Untested: anything on GPUs or the fabric — TP8 boot, memory admission, H8 MLA numerics on GB10, NCCL and
+RoCEnante at eight peers, K-stop guards across eight ranks, quality and speed. The gate tools stay TP4-only.
+
 ## Hardware questions to answer
 
 1. Does the TP8 boot pass admission with the 31.4 GB head, and what are the per-rank MemAvailable minima

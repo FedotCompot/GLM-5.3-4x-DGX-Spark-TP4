@@ -1,7 +1,9 @@
 # Runtime
 
 `start.sh` loads `profiles/current.env`, then `.env.example`, then an optional `.env` and invokes the
-workstation launcher. The profile records every fixed explicit container env key from the selected
+workstation launcher. With `RECIPE_TP_SIZE=8` it then layers `profiles/tp8.env` and reloads `.env`, so
+site values still win; the launcher requires one host, fabric address and image per rank and writes the
+TP size into `--tensor-parallel-size`, `--nnodes` and the draft TP ([TP8](tp8.md)). The profile records every fixed explicit container env key from the selected
 Boot B launch after removing its two instrumentation keys. Five fabric/rank keys are filled from `.env`.
 `profiles/serve-args.json` records the effective ordered serving vector with exactly one speculative config.
 

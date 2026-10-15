@@ -1,7 +1,8 @@
 # Installation
 
-Prepare four DGX Sparks with Docker/NVIDIA Container Toolkit, an existing switched
-RoCE fabric and complete full-model weights at identical operator-selected paths.
+Prepare four DGX Sparks (or eight with `RECIPE_TP_SIZE=8`, see [TP8](tp8.md)) with Docker/NVIDIA
+Container Toolkit, an existing switched RoCE fabric and complete full-model weights at identical
+operator-selected paths.
 The administrator configures private addresses, rail identifiers, image IDs and
 paths in `.env`; published examples contain template fields only.
 
