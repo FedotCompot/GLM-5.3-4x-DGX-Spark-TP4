@@ -5,6 +5,11 @@ source "$HERE/profiles/current.env"
 source "$HERE/.env.example"
 CONFIG=${RECIPE_CONFIG:-"$HERE/.env"}
 [[ ! -f "$CONFIG" ]] || source "$CONFIG"
+export RECIPE_TP_SIZE="${RECIPE_TP_SIZE:-4}"
+if [[ $RECIPE_TP_SIZE == 8 ]]; then
+  source "$HERE/profiles/tp8.env"
+  [[ ! -f "$CONFIG" ]] || source "$CONFIG"
+fi
 export RECIPE_PROFILE="${RECIPE_PROFILE:-native-mtp-k2}"
 case "$RECIPE_PROFILE" in
   native-mtp-k2) export RECIPE_SERVE_ARGS="$HERE/profiles/serve-args.json" ;;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workstation launcher for four TP ranks; dry rendering has no fleet access."""
+"""Workstation launcher for RECIPE_TP_SIZE ranks (4 or 8); dry rendering has no fleet access."""
 import concurrent.futures
 import hashlib
 import json
@@ -17,9 +17,12 @@ import uuid
 ROOT = Path(os.environ['RECIPE_ROOT'])
 sys.path.insert(0, str(ROOT/'scripts'))
 ENV = os.environ
+import topology
+TP = topology.tp_size(ENV)
+RANKS = range(TP)
 HOSTS = ENV['RECIPE_HOSTS'].split()
 IPS = ENV['RECIPE_IPS'].split()
-IMAGES = ENV.get('RECIPE_IMAGES', '').split() or [ENV['IMAGE']] * 4
+IMAGES = ENV.get('RECIPE_IMAGES', '').split() or [ENV['IMAGE']] * TP
 STATE = ROOT / 'state/deployment.json'
 SERVE_ARGS = Path(ENV.get('RECIPE_SERVE_ARGS', ROOT / 'profiles/serve-args.json'))
 # RECIPE_* lines in current.env are launch-shape switches read here; they never enter a container.
@@ -173,6 +176,8 @@ def launch_switches():
     packed_length = (mode == 'fp4x' and values['RECIPE_MAX_MODEL_LEN'].isdigit()
                      and 64 <= int(values['RECIPE_MAX_MODEL_LEN']) <= packed_cap
                      and int(values['RECIPE_MAX_MODEL_LEN']) % 64 == 0)
+    if packed_length and int(values['RECIPE_MAX_MODEL_LEN']) > topology.MODEL['max_position']:
+        raise ValueError('RECIPE_MAX_MODEL_LEN exceeds the model max_position_embeddings')
     if values['RECIPE_MAX_MODEL_LEN'] not in MAX_MODEL_LENS and not packed_length:
         raise ValueError('RECIPE_MAX_MODEL_LEN must be one of ' + ', '.join(MAX_MODEL_LENS))
     values['GLM_MTP_KSTOP'] = ENV.get('GLM_MTP_KSTOP', '0').strip()
@@ -211,7 +216,42 @@ def launch_switches():
         raise ValueError('launch switches apply to the native-mtp-k2 profile only: ' + ', '.join(changed))
     dispram()
     optional_env()
+    tp_gates()
     return values
+
+
+# Levers with TP4-only shapes or kernels: (key, off value, reason).
+TP4_ONLY = (('GLM_DRAFT_HEAD', '0', 'per-rank vocab 19360 is not a Marlin multiple of 64'),
+            ('GLM_DRAFT_EHPROJ', '0', 'qualified only with the NVFP4 draft head'),
+            ('GLM_ATTN_FRONT_FUSE', '0', 'H16 kernel and admitted shapes'),
+            ('GLM_MARLIN_L2HINT', 'off', 'specialised for TP4 MoE GEMM shapes'),
+            ('GLM_MARLIN_L2HINT_AB', '0', 'specialised for TP4 MoE GEMM shapes'),
+            ('GLM_INDEXER_ROW_SHARD', '0', 'four-way row partition'),
+            ('GLM_INDEXER_STABLE_TOPK', '0', 'TP4-only startup check'))
+
+
+def tp_gates():
+    """Refuse TP4-only levers and profiles at any other TP size (docs/tp8.md)."""
+    if TP == 4:
+        return
+    if ENV.get('RECIPE_PROFILE', 'native-mtp-k2') != 'native-mtp-k2':
+        raise ValueError('RECIPE_TP_SIZE=%d supports the native-mtp-k2 profile only' % TP)
+    for key, off, why in TP4_ONLY:
+        if (ENV.get(key, off).strip() or off) != off:
+            raise ValueError('%s is TP4-only (%s); set %s=%s with RECIPE_TP_SIZE=%d' % (key, why, key, off, TP))
+
+
+def tp_shape(args):
+    """Write the TP size into the saved vector; TP4 leaves it byte-identical."""
+    args = list(args)
+    args[args.index('--tensor-parallel-size') + 1] = str(TP)
+    args[args.index('--nnodes') + 1] = str(TP)
+    i = args.index('--speculative-config') + 1
+    spec = json.loads(args[i])
+    if spec.get('draft_tensor_parallel_size', TP) != TP:
+        spec['draft_tensor_parallel_size'] = TP
+        args[i] = json.dumps(spec)
+    return args
 
 
 def kstop_layout(values):
@@ -248,7 +288,7 @@ def kstop_capture_sizes():
 def launch_shape(args):
     """Apply the launch-shape switches to a copy of the saved native K2 vector."""
     switches = launch_switches()
-    args = list(args)
+    args = tp_shape(args)
     if ENV.get('RECIPE_PROFILE', 'native-mtp-k2') != 'native-mtp-k2':
         return args                     # other profiles keep their saved vector (switches are at defaults)
     if switches['RECIPE_C4_PASS2_GRAPH'] == '1':
@@ -307,9 +347,9 @@ def kstop_note():
 
 
 def validate():
-    if len(HOSTS) != 4 or len(IPS) != 4 or len(IMAGES) != 4:
-        raise ValueError('Exactly four hosts, fabric addresses and images required')
-    if len(set(HOSTS)) != 4 or len(set(IPS)) != 4:
+    if len(HOSTS) != TP or len(IPS) != TP or len(IMAGES) != TP:
+        raise ValueError('Exactly %d hosts, fabric addresses and images required (RECIPE_TP_SIZE=%d)' % (TP, TP))
+    if len(set(HOSTS)) != TP or len(set(IPS)) != TP:
         raise ValueError('Hostnames and fabric addresses must be unique')
     for host in HOSTS:
         if not re.fullmatch(r'[A-Za-z0-9_.@-]+', host):
@@ -331,11 +371,11 @@ def validate():
 
 
 def nccl_hashes():
-    # One hash for identical binaries, or four comma-separated hashes in HOSTS order.
+    # One hash for identical binaries, or one comma-separated hash per host in HOSTS order.
     values = ENV['NCCL_SHA256'].split(',')
-    values = values * 4 if len(values) == 1 else values
-    if len(values) != 4 or any(not re.fullmatch(r'[0-9a-f]{64}', v) for v in values):
-        raise ValueError('NCCL_SHA256 must be one SHA256 or four comma-separated SHA256 values in host order')
+    values = values * TP if len(values) == 1 else values
+    if len(values) != TP or any(not re.fullmatch(r'[0-9a-f]{64}', v) for v in values):
+        raise ValueError('NCCL_SHA256 must be one SHA256 or %d comma-separated SHA256 values in host order' % TP)
     return values
 
 
@@ -547,7 +587,7 @@ def prefill_control(chunk, sequence):
     control = dict(schema=1, chunk=chunk, sequence=sequence)
     code = 'import json,os,pathlib; p=pathlib.Path(PATH); q=p.with_name(p.name+".new"); q.write_text(PAYLOAD); os.replace(q,p); print(p.read_text())'
     code = code.replace('PATH', repr(ENV['OVERLAY_REMOTE'] + '/cache/d2w2-prefill-control.json')).replace('PAYLOAD', repr(json.dumps(control)))
-    for rank in range(4):
+    for rank in RANKS:
         if json.loads(remote(rank, 'python3 -c ' + shlex.quote(code))) != control:
             raise RuntimeError('Prefill readback disagreement')
 
@@ -654,7 +694,7 @@ def jit_prep(ctn):
         return built
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         # Fail closed: every rank must finish before compaction and launch.
-        futures = [pool.submit(prep_rank, rank) for rank in range(4)]
+        futures = [pool.submit(prep_rank, rank) for rank in RANKS]
         errors = []
         for rank, future in enumerate(futures):
             try:
@@ -749,7 +789,7 @@ def persistent_cache_seed(ctn):
         status, key = persist_result(out, 'seed')
         return dict(image=image_id, key=key, seed=status)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(seed_rank, rank) for rank in range(4)]
+        futures = [pool.submit(seed_rank, rank) for rank in RANKS]
         result, errors = {}, []
         for rank, future in enumerate(futures):
             try:
@@ -781,7 +821,7 @@ class PersistentCacheSave:
         self.results, self.reported = {}, set()
         self.lock = threading.Lock()
         self.threads = []
-        for rank in range(4):
+        for rank in RANKS:
             t = threading.Thread(target=self._run, args=(rank,), name=f'pcache-save-r{rank}', daemon=True)
             t.start()
             self.threads.append(t)
@@ -915,7 +955,7 @@ print(json.dumps(dict(architecture=image['Architecture'],image=image['Id'],MemAv
         remote(rank, 'sudo -n -l /usr/local/sbin/spark-compact-mem.sh >/dev/null')
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         # Await every task, including failures, before admitting any container.
-        results = [pool.submit(check_rank, rank) for rank in range(4)]
+        results = [pool.submit(check_rank, rank) for rank in RANKS]
         errors = []
         for rank, future in enumerate(results):
             try:
@@ -939,7 +979,7 @@ def unlock(token):
 
 def page_cache_state(action):
     if ENV.get('RECIPE_PAGE_CACHE_POLICY', '0') == '1':
-        for rank in range(4):
+        for rank in RANKS:
             remote(rank, 'python3 /usr/local/sbin/glm-page-cache-policy.py ' + action, timeout=45)
 
 
@@ -956,7 +996,7 @@ def stop(deployment):
             raise RuntimeError('container still running')
     failed = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(stop_rank, rank) for rank in range(4)]
+        futures = [pool.submit(stop_rank, rank) for rank in RANKS]
         for rank, future in enumerate(futures):
             try:
                 future.result()
@@ -970,7 +1010,7 @@ def stop(deployment):
     if policy_error is not None:
         raise RuntimeError('Containers stopped; cache policy end failed; lock retained: ' + str(policy_error))
     unlock(deployment['token'])
-    print('Four containers stopped and preserved; owned lock released', flush=True)
+    print('%d containers stopped and preserved; owned lock released' % TP, flush=True)
 
 
 SAMPLE_CODE = '''import json,pathlib,subprocess,re
@@ -1087,9 +1127,9 @@ def monitor(deployment, boot=False):
                 time.sleep((min(next_sample, next_health) if boot and not ready else next_sample) - now)
                 continue
             next_sample = now + (SAMPLE_BOOT_S if boot else SAMPLE_STEADY_S)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=TP // 2) as pool:
                 futures = [pool.submit(remote, rank, 'python3 -c ' + shlex.quote(
-                    'NAME=' + repr(deployment['ctn'] + f'-r{rank}') + '\n' + SAMPLE_CODE)) for rank in range(4)]
+                    'NAME=' + repr(deployment['ctn'] + f'-r{rank}') + '\n' + SAMPLE_CODE)) for rank in RANKS]
                 samples = [json.loads(f.result()) for f in futures]
             with (directory / 'watchdog.jsonl').open('a') as out:
                 out.write(json.dumps(dict(elapsed_s=now-started, samples=samples)) + '\n')
@@ -1144,7 +1184,7 @@ def serve(ctn):
             dry = Path(tmp)/'dry.txt'
             headers = ENV.get('RECIPE_BOOT_PREFLIGHT_HEADERS')
             if headers and Path(headers).is_file():
-                dry.write_text('\n'.join(shlex.join(docker_command(rank, ctn)) for rank in range(4))+'\n')
+                dry.write_text('\n'.join(shlex.join(docker_command(rank, ctn)) for rank in RANKS)+'\n')
             result = advisory(ROOT, dry, Path(tmp)/'report.json', headers,
                        ENV.get('RECIPE_BOOT_PREFLIGHT_IMAGE'), ENV.get('RECIPE_BOOT_PREFLIGHT', '1') == '1')
             logdir = ROOT/'logs'/ctn
@@ -1162,7 +1202,7 @@ def serve(ctn):
     STATE.write_text(json.dumps(deployment, indent=2) + '\n')
     launched = []
     try:
-        for rank in range(4):
+        for rank in RANKS:
             remote(rank, 'mkdir ' + shlex.quote(ENV['OVERLAY_REMOTE']))
             subprocess.run(['rsync', '-a', '--exclude=__pycache__', str(ROOT / 'overlay') + '/',
                             HOSTS[rank] + ':' + ENV['OVERLAY_REMOTE'] + '/'], check=True)
@@ -1174,20 +1214,20 @@ def serve(ctn):
         jit_prep(ctn)
         hook = dispram()
         if hook is not None:
-            for rank in range(4):
+            for rank in RANKS:
                 subprocess.run(['rsync', '-a', str(ROOT / 'scripts/dispram.sh'),
                                 HOSTS[rank] + ':' + hook.home(ENV) + '/dispram.sh'], check=True)
             hook.ensure(HOSTS, ENV)     # require: raises before any engine starts
-        for rank in range(4):
+        for rank in RANKS:
             remote(rank, 'sudo -n /usr/local/sbin/spark-compact-mem.sh', timeout=180)
             # Compaction must succeed and must preserve the 110 GiB preboot floor.
             available = int(remote(rank, "awk '/MemAvailable/{print $2}' /proc/meminfo"))
             if available < 110 * 1048576:
                 raise RuntimeError('Preboot memory floor after compaction')
         prefill_control(512, 0)
-        deployment['swap_base'] = {rank: int(remote(rank, "awk '/SwapTotal/{t=$2}/SwapFree/{f=$2}END{print t-f}' /proc/meminfo")) for rank in range(4)}
+        deployment['swap_base'] = {rank: int(remote(rank, "awk '/SwapTotal/{t=$2}/SwapFree/{f=$2}END{print t-f}' /proc/meminfo")) for rank in RANKS}
         STATE.write_text(json.dumps(deployment, indent=2) + '\n')
-        for rank in (3, 2, 1, 0):
+        for rank in reversed(RANKS):
             print(HOSTS[rank], remote(rank, shlex.join(docker_command(rank, ctn))), flush=True)
             launched.append(rank)
     except BaseException:
@@ -1244,20 +1284,20 @@ def main():
         if command != 'serve':
             raise ValueError('DRY=1 supports serve only')
         if persistent_cache_enabled():
-            for rank in range(4):
+            for rank in RANKS:
                 print(f'# persistent-cache-seed rank={rank} host={HOSTS[rank]} (image ID resolved at serve)')
                 print(shlex.join(persist_command(rank, ctn, 'sha256:' + '0' * 64, 'seed')))
         if kstop_note():
             print('# ' + kstop_note())
         print('# ' + floors)
-        for rank in range(4):
+        for rank in RANKS:
             print(f'# jit-prep rank={rank} host={HOSTS[rank]}')
             print(shlex.join(jit_prep_command(rank, ctn)))
-        for rank in (3, 2, 1, 0):
+        for rank in reversed(RANKS):
             print(f'# rank={rank} host={HOSTS[rank]}')
             print(shlex.join(docker_command(rank, ctn)))
         if persistent_cache_enabled():
-            for rank in range(4):
+            for rank in RANKS:
                 print(f'# persistent-cache-save rank={rank} host={HOSTS[rank]} (after admission)')
                 print(shlex.join(persist_command(rank, ctn, 'sha256:' + '0' * 64, 'save', '0' * 32)))
         return
@@ -1306,13 +1346,13 @@ def main():
     elif command == 'watch':
         monitor(deployment)
     elif command == 'status':
-        for rank in range(4):
+        for rank in RANKS:
             print(HOSTS[rank], remote(rank, 'docker inspect -f ' + shlex.quote('{{.State.Running}} {{.State.OOMKilled}}') + ' ' + shlex.quote(deployment['ctn'] + f'-r{rank}')))
         print('health', health())
     elif command == 'logs':
         rank = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-        if rank not in range(4):
-            raise ValueError('rank must be 0..3')
+        if rank not in RANKS:
+            raise ValueError('rank must be 0..%d' % (TP - 1))
         print(remote(rank, 'docker logs --tail 100 ' + shlex.quote(deployment['ctn'] + f'-r{rank}') + ' 2>&1'))
     else:
         raise ValueError('usage: start.sh preflight|serve|status|logs [rank]|watch|stop|dispram-setup')
