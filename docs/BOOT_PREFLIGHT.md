@@ -3,7 +3,7 @@
 `scripts/boot_preflight.py` consumes the launcher's saved DRY Docker commands.
 It runs CPU-only containers with `--pull never --network none`, preserving each
 rank's feature env and vLLM argument vector. It never invokes SSH. The default
-budget is 120 seconds across all ranks. The standalone diagnostic exits 1 on failure. The release launcher treats it as advisory: default ON only with an existing header cache; otherwise warning + skip. Failure, timeout, missing image or malformed receipt also warns and continues. It never substitutes for memory, payload-hash or fleet admission checks.
+budget is 30 seconds per DRY rank (120 s at TP4, 240 s at TP8). The standalone diagnostic exits 1 on failure. The release launcher treats it as advisory: default ON only with an existing header cache; otherwise warning + skip. Failure, timeout, missing image or malformed receipt also warns and continues. It never substitutes for memory, payload-hash or fleet admission checks.
 Reports include per-check errors, tracebacks, source hashes, rank, rendered image,
 actual image selection, duration, and an explicit list of hardware/value fakes.
 
@@ -56,7 +56,7 @@ registration, adaptive scheduler source transformation/capacity assertions,
 and the kstop runtime's exact method guard. It also executes the NVFP4 MTP apply
 path with tiny CPU activations to verify pinned API reachability.
 
-Explicit fakes cover SM121/TP4/EP1 metadata, GPU MLA dispatch, CUDA streams/events,
+Explicit fakes cover SM121/EP1 metadata with the DRY vector's TP size (4 or 8), GPU MLA dispatch, CUDA streams/events,
 Marlin repacks/workspaces/GEMMs, KV-b dequantization, meta value reductions,
 weight_shape payloads and CUDA control/remap operations. All fakes are local to
 an ephemeral worker. No numeric correctness, CUDA execution, memory admission,
@@ -65,7 +65,7 @@ collective, quality or throughput claim follows from PASS.
 `--config tests/fixtures/boot_preflight_glm53_config.json` permits construction
 and historical diagnostics without a cache. Header checks still fail and the
 command still exits 1. `--rank 0` is a diagnostic subset; default covers all DRY
-ranks. The fixture config is byte-identical to the pinned target config.
+ranks, which must be 0..TP-1 with one `--tensor-parallel-size`. The fixture config is byte-identical to the pinned target config.
 
 ## Drivers and regressions
 

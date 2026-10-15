@@ -57,6 +57,30 @@ class Headers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d,self.assertRaises(ValueError):H.safe_file(Path(d),'../escape')
 
 
+class WorldSize(unittest.TestCase):
+    def dry(self,world,ranks=None):
+        lines=[]
+        for r in (range(world) if ranks is None else ranks):
+            lines.append('docker run -d -e A=1 image:local serve /model --tensor-parallel-size %d --node-rank %d'%(world,r))
+        return '\n'.join(lines)+'\n'
+    def test_world_from_vector(self):
+        vs=B.vectors(self.dry(8))
+        self.assertEqual([B.world_size(v) for v in vs],[8]*8)
+        self.assertEqual(B.world_size(dict(args=['serve','/model'])),4)
+    def host(self,text,rank=None):
+        with tempfile.TemporaryDirectory() as d:
+            dry=Path(d)/'dry.txt';dry.write_text(text)
+            a=B.argparse.Namespace(dry=dry,rank=rank,headers=Path(d)/'missing.json',config=None,root=ROOT,budget=None,out=Path(d)/'o.json',image=None)
+            return B.host(a)
+    def test_full_preflight_needs_every_rank_of_the_world(self):
+        with self.assertRaisesRegex(ValueError,'ranks 0..7'):self.host(self.dry(8,range(4)))
+        with self.assertRaisesRegex(ValueError,'ranks 0..3'):self.host(self.dry(4,range(3)))
+        mixed=self.dry(8).replace('--tensor-parallel-size 8 --node-rank 7','--tensor-parallel-size 4 --node-rank 7')
+        with self.assertRaisesRegex(ValueError,'disagree'):self.host(mixed)
+        with self.assertRaisesRegex(ValueError,'missing metadata'):self.host(self.dry(8))
+        with self.assertRaisesRegex(ValueError,'missing metadata'):self.host(self.dry(8),rank=6)
+
+
 class SidecarContracts(unittest.TestCase):
     def test_names_shapes_dtypes_source_and_companions(self):
         B.overlay_paths(ROOT)
