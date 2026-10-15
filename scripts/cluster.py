@@ -37,6 +37,9 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
 GiB = 1 << 30
 # RECIPE_MODEL -> manifests/<kind>.json; both share the target's config, index and shapes (docs/weights.md).
 MODEL_MANIFESTS = {'stock': 'target', 'abliterated': 'abliterated'}
+# Repo@revision per manifest, so DRY needs no manifests/ tree.
+MODEL_IDS = {'target': 'Tech2wild/GLM-5.3-Int4-Int8Mix@206507bbb047d8223964a0414cd83230c59428f9',
+             'abliterated': 'Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix@08a92f9da01cd90d591edb3fdd71c2ccc9f37ddd'}
 
 
 def model_kind():
@@ -1371,8 +1374,7 @@ def l2hint_setup():
 
 
 def model_note():
-    manifest = model_manifest()
-    return 'Model: %s (%s@%s)' % (ENV.get('RECIPE_MODEL', '').strip() or 'stock', manifest['repo'], manifest['sha'])
+    return 'Model: %s (%s)' % (ENV.get('RECIPE_MODEL', '').strip() or 'stock', MODEL_IDS[model_kind()])
 
 
 def main():

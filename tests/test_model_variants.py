@@ -112,6 +112,12 @@ class Switch(ClusterCase):
         with self.assertRaisesRegex(RuntimeError, 'stock or abliterated'):
             layered_env(4, 'RECIPE_MODEL=derisked\n')
 
+    def test_model_ids_match_manifests(self):
+        C = self.cluster(layered_env(4))
+        for kind in C.MODEL_MANIFESTS.values():
+            m = manifest(kind)
+            self.assertEqual(C.MODEL_IDS[kind], m['repo'] + '@' + m['sha'])
+
     def test_launcher_refuses_unknown_model(self):
         C = self.cluster(layered_env(4))
         with patch.dict(C.ENV, RECIPE_MODEL='uncensored'), self.assertRaisesRegex(ValueError, 'RECIPE_MODEL'):
