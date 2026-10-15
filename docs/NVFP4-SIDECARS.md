@@ -1,5 +1,9 @@
 # NVFP4 sidecars: commands and identities
 
+Sidecars belong to one checkpoint tree: convert a separate pair for each `RECIPE_MODEL` (stock or abliterated,
+[weights](weights.md)). `./start.sh preflight` refuses a sidecar whose recorded source shard hashes differ from the
+selected manifest, because index and config alone cannot tell the two trees apart.
+
 Run on each rank with the pinned, already installed ARM64 serving image ID. Original checkpoint mounts are
 read-only. Outputs must be distinct new directories outside the checkpoint. No GPU is used. Existing verified
 sidecars are reused for the release gate; conversion and the full QDQ audit are preparation outside its 75 minutes.

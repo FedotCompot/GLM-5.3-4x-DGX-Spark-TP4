@@ -44,3 +44,51 @@ The recipe's code licence does not grant rights to model weights. No drafter fin
 Markov modification or quantization is applied. Incoai DFlash2 is CC BY-NC-ND 4.0 and is not downloaded
 or used by this recipe. CPU-only allocator fixtures exercise alternate synthetic layouts; they do not
 install alternative models or select alternative serving profiles.
+
+## Abliterated alternative (`RECIPE_MODEL=abliterated`)
+
+| checkpoint | revision | safetensors files | total downloaded files |
+|---|---|---:|---:|
+| Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix | `08a92f9da01cd90d591edb3fdd71c2ccc9f37ddd` | 282 | 290 |
+
+Public and ungated, GLM-5.3 licence. Per its model card, Blackfrost copied the pinned Tech2wild tree (revision
+`206507bb`) and applied one direction-weight modification pass (alpha 3.0, first two layers skipped, scales
+frozen) to 76 `o_proj`, 1 dense `down_proj`, 19,200 routed-expert `down_proj` and 75 shared `down_proj`
+matrices; the MTP layer is stock. It is the public checkpoint matching the "abliterated graft with the identical
+quantization envelope" that ajclark's DCP4 recipe reports measuring; that recipe does not name its weights, so
+this identity is not confirmed. The card states it has not been through a judged refusal suite.
+
+`manifests/abliterated.json` was generated with `scripts/weights.py manifest` (Hub LFS SHA256 for shards, local
+SHA256 for small files); the same command reproduces `manifests/target.json` byte for byte. Against the stock
+target, all 290 file names, `config.json`, `model.safetensors.index.json`, the chat template, tokenizer and
+generation config are identical; 278 of 282 shards differ (re-serialised), and shards 1 and 271-273 are identical.
+Other public abliterated GLM-5.3 checkpoints use NVFP4, FP8 or BF16 layouts this recipe does not load.
+
+```bash
+scripts/download_weights.sh "$HOME/models" abliterated
+python3 scripts/weights.py verify abliterated "$HOME/models/Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix"
+# Convert both NVFP4 sidecars FROM THIS TREE into new directories (docs/NVFP4-SIDECARS.md, MODEL_DIR=<this tree>).
+# .env, next to the unchanged stock paths:
+#   RECIPE_MODEL=abliterated
+#   ABLITERATED_MODEL_DIR=/srv/glm/models/Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix
+#   ABLITERATED_ATTN_NVFP4_DIR=/srv/glm/models/GLM-5.3-derisked-attn-nvfp4
+#   ABLITERATED_NVFP4_MORE_DIR=/srv/glm/models/GLM-5.3-derisked-more-nvfp4
+DRY=1 ./start.sh serve   # prints "Model: abliterated (Blackfrost-AI/...@08a92f9...)"
+./start.sh preflight
+```
+
+`RECIPE_MODEL=stock` (default) returns to the Tech2wild tree; a switch is a drained restart. The served name stays
+`GLM-5.3`, so clients and bench tools need no change; DRY, serve and `state/deployment.json` record the model.
+
+**Sidecars must come from the selected tree.** The NVFP4 sidecars replace every attention projection
+(including `o_proj`), the shared experts and the dense MLPs. Sidecars converted from the stock tree would load
+silently over the abliterated checkpoint, because the loaders only compare `config.json` and the index, which are
+byte-identical, and would restore stock `o_proj` and shared/dense `down_proj` weights. `./start.sh preflight`
+therefore compares each mounted sidecar's recorded source shard hashes with the selected manifest and refuses a
+mismatch. Convert both sidecars from the abliterated tree (about 7.5 + 5 CPU minutes per rank, measured on the stock tree).
+
+Unqualified on this recipe: no boot, memory, quality, needle, temperature-0 or speed evidence exists for the
+abliterated tree; the release-gate results are stock-only. The native MTP draft layer is stock, so draft
+acceptance (and K-stop's stock-fitted tau) may move; verification keeps outputs exact to the abliterated target.
+The model card's disclaimer applies: the altered refusal profile is not a safety boundary, and operators are
+responsible for lawful use.
