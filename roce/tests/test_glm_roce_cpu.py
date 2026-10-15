@@ -2,7 +2,7 @@
 
 The b12x runtime is replaced by a fake whose collectives run over gloo, and vLLM's
 classes by small stand-ins with the same method shapes, so these tests pin:
-- limit parsing and the capability vote across 4 real (gloo) ranks, including the
+- limit parsing and the capability vote across 4 and 8 real (gloo) ranks, including the
   fail-together paths (a rank that cannot take part, limits that differ);
 - routing: eligible all-reduces/all-gathers go to RoCE, everything else (too big,
   wrong dtype, non-TP groups) to the stock path, identically on every rank;
@@ -224,15 +224,15 @@ def test_read_limits_defaults_and_validation():
     assert adapter_mod.require_enabled({"GLM_ROCE_REQUIRE": "0"}) is False
 
 
-# -- 2. four gloo ranks: vote + routing ---------------------------------------------------
+# -- 2. four and eight gloo ranks: vote + routing ---------------------------------------------------
 
 
-def _rank_main(rank, scenario, tmpdir):
-    """One rank of a 4-process gloo job; writes its verdict to ``<tmpdir>/rank<r>.json``."""
+def _rank_main(rank, scenario, tmpdir, world=WORLD):
+    """One rank of a ``world``-process gloo job; writes its verdict to ``<tmpdir>/rank<r>.json``."""
     result: dict = {"rank": rank}
     try:
         dist.init_process_group(
-            "gloo", init_method=f"file://{tmpdir}/store", rank=rank, world_size=WORLD,
+            "gloo", init_method=f"file://{tmpdir}/store", rank=rank, world_size=world,
             timeout=timedelta(seconds=60),
         )
         group = dist.group.WORLD
@@ -244,7 +244,7 @@ def _rank_main(rank, scenario, tmpdir):
         if scenario.endswith("_lenient"):
             os.environ["GLM_ROCE_REQUIRE"] = "0"
         single_node = scenario == "single_node"
-        adapter_mod._in_the_same_node_as = lambda g, source_rank=0: [single_node or r == 0 for r in range(WORLD)]
+        adapter_mod._in_the_same_node_as = lambda g, source_rank=0: [single_node or r == 0 for r in range(world)]
 
         mod = make_fake_vllm_comm_module()
         install.patch_cuda_communicator(mod)
@@ -256,8 +256,8 @@ def _rank_main(rank, scenario, tmpdir):
         comm = tp.glm_roce_comm
         result["enabled"] = comm is not None and not comm.disabled
         result["verdict"] = getattr(comm, "verdict", None)
-        world = mod.CudaCommunicator(group, torch.device("cpu"), object(), unique_name="world")
-        result["world_has_comm"] = world.glm_roce_comm is not None
+        world_comm = mod.CudaCommunicator(group, torch.device("cpu"), object(), unique_name="world")
+        result["world_has_comm"] = world_comm.glm_roce_comm is not None
 
         torch.manual_seed(1234 + rank)
         # decode-sized bf16 all-reduces: 1..512 tokens x 4096 hidden (8 KiB .. 4 MiB)
@@ -278,14 +278,14 @@ def _rank_main(rank, scenario, tmpdir):
         tp.all_reduce(torch.ones(8, dtype=torch.int32))
         result["int32_stock"] = len(tp.stock_calls) == before + 1
         # logits-shaped gather: [rows, vocab/tp] along the last dim, and dim 0
-        vocab_shard = 154880 // WORLD
+        vocab_shard = 154880 // world
         g = tp.all_gather(torch.full((4, vocab_shard), float(rank)).to(torch.bfloat16), dim=-1)
         result["gather_shape"] = list(g.shape)
         result["gather_ok"] = all(
-            bool((g[:, r * vocab_shard:(r + 1) * vocab_shard] == r).all()) for r in range(WORLD)
+            bool((g[:, r * vocab_shard:(r + 1) * vocab_shard] == r).all()) for r in range(world)
         )
         g0 = tp.all_gather(torch.full((2, 8), float(rank)), dim=0)
-        result["gather0_ok"] = list(g0[:, 0].tolist()) == [0, 0, 1, 1, 2, 2, 3, 3]
+        result["gather0_ok"] = list(g0[:, 0].tolist()) == [r for r in range(world) for _ in (0, 1)]
         big = torch.zeros(300, vocab_shard, dtype=torch.float32)  # 46 MB > 16 MiB
         before = len(tp.stock_calls)
         tp.all_gather(big, dim=-1)
@@ -307,19 +307,28 @@ def _rank_main(rank, scenario, tmpdir):
             dist.destroy_process_group()
 
 
-def _run_world(scenario, **env_values):
+def _run_world(scenario, world=WORLD, **env_values):
     import torch.multiprocessing as mp
 
     with tempfile.TemporaryDirectory() as tmpdir, env(**env_values):
-        mp.spawn(_rank_main, args=(scenario, tmpdir), nprocs=WORLD, join=True)
-        results = [json.loads(Path(tmpdir, f"rank{r}.json").read_text()) for r in range(WORLD)]
+        mp.spawn(_rank_main, args=(scenario, tmpdir, world), nprocs=world, join=True)
+        results = [json.loads(Path(tmpdir, f"rank{r}.json").read_text()) for r in range(world)]
     for r in results:
         assert "error" not in r, r["error"]
     return results
 
 
 def test_four_ranks_route_decode_sizes():
-    results = _run_world("ok", GLM_ROCE_REQUIRE=None, GLM_ROCE_MAX_SIZE=None, GLM_ROCE_GATHER_MAX_SIZE=None)
+    _route_decode_sizes(4)
+
+
+def test_eight_ranks_route_decode_sizes():
+    _route_decode_sizes(8)
+
+
+def _route_decode_sizes(world):
+    results = _run_world("ok", world, GLM_ROCE_REQUIRE=None, GLM_ROCE_MAX_SIZE=None, GLM_ROCE_GATHER_MAX_SIZE=None)
+    assert len(results) == world
     for r in results:
         assert r["enabled"], r
         assert r["world_has_comm"] is False  # only the TP group is routed
@@ -338,6 +347,13 @@ def test_four_ranks_one_rank_cannot_all_raise():
     results = _run_world("rank2_unsupported", GLM_ROCE_REQUIRE=None)
     for r in results:
         assert "raised" in r and "rank 2" in r["raised"] and "GLM_ROCE_REQUIRE=0" in r["raised"], r
+
+
+def test_eight_ranks_one_rank_cannot_all_raise():
+    results = _run_world("rank2_unsupported", 8, GLM_ROCE_REQUIRE=None)
+    assert len(results) == 8
+    for r in results:
+        assert "raised" in r and "rank 2" in r["raised"], r
 
 
 def test_four_ranks_one_rank_cannot_lenient_all_nccl():
