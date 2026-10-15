@@ -81,19 +81,36 @@ New per-node costs that eat into the headroom (estimates, unmeasured):
 
 ## RoCE fabric for eight nodes
 
-Each Spark has one ConnectX-7 with two QSFP ports; the release drives both rails
-(`rocep1s0f0,roceP2p1s0f0`). Two ports allow at most a direct pair or a three-node ring, so **eight nodes need
-a switch**: either one switch with 16 ports at the rails' speed (both rails of every node), or two 8-port
-switches, one per rail, keeping the current "rail N to switch N" layout and `NCCL_CROSS_NIC=0`. The fabric
-must stay lossless RoCE v2 (PFC/ECN as on the TP4 fabric), GID index 3, one subnet per rail, and the eight
-fabric addresses go into `IPS` in rank order.
+Each Spark's ConnectX-7 reaches the GB10 over two PCIe Gen5 x4 links (about 13.6 GB/s each), and every 200G
+port appears once per link. The release's two "rails" `rocep1s0f0,roceP2p1s0f0` are the two PCIe twins of
+**port 0**; port 1 is unused (layout documented in @ajclark's
+[NETWORK.md](https://github.com/ajclark/GLM-5.3-DCP4-DFlash2-NVMe-KV-Offload-4x-DGX-Spark/blob/main/docs/NETWORK.md)).
+So the TP4 fleet uses one cable per node, and TP8 needs **one 200G switch port per node: an 8-port (or larger)
+200G RoCE switch**, each node's port 0 cabled to it and both twins addressed as today. The port (25 GB/s) and
+the two x4 links (~27 GB/s) are nearly matched, so cabling port 1 to a second switch would add little bandwidth.
+The fabric must stay lossless RoCE v2 (PFC/ECN as on the TP4 fabric); the eight fabric addresses go into `IPS`
+in rank order.
+
+A switchless ring is possible at any node count (both ports to the two neighbours; @ajclark ran four Sparks
+that way, [issue #2](https://github.com/tonyd2wild/GLM-5.3-Int4-Int8Mix-TP4-4x-DGX-Spark/issues/2)), but it
+needs NCCL ring-only settings (`NCCL_IB_SUBNET_AWARE_ROUTING=1`, merged NICs, `NCCL_RUNTIME_CONNECT=1` with
+PAT/NVLS/CollNet off, one channel, rank order equal to cable order) and it cannot carry RoCEnante: the one-shot
+all-reduce writes to every peer, and a ring has no path between non-neighbours. An 8-hop ring all-reduce also
+adds latency on every decode collective. This recipe does not support a ring at TP8.
 
 The one-shot all-reduce writes each rank's payload to every peer, so per-rank egress per collective grows from
 3x to 7x the payload. Decode payloads are small (12 KiB per token row for hidden 6144 in BF16, 192 KiB at M16),
-so c1 stays latency-bound; at c4/M16 the bandwidth floor rises from about 0.6 MiB to 1.3 MiB per rank per
-all-reduce, roughly 12 us to 27 us at 50 GB/s for two 200 Gb/s rails (arithmetic, not measured). With about
-two all-reduces per layer and 79 layers, that floor matters at c4 and above. The default `GLM_ROCE_MAX_SIZE`
-4 MiB and 16 MiB gather cap still cover decode; the logits all-gather shard halves to 19,360 columns.
+so c1 stays latency-bound; at c4/M16 the bandwidth floor rises from about 0.56 MiB to 1.31 MiB per rank per
+all-reduce, roughly 24 us to 55 us at 25 GB/s (arithmetic, not measured). With about two all-reduces per layer
+and 79 layers, that floor is a few milliseconds per c4 step and matters at c4 and above. The default
+`GLM_ROCE_MAX_SIZE` 4 MiB and 16 MiB gather cap still cover decode; the logits all-gather shard halves to
+19,360 columns.
+
+Two per-node checks now run in `./start.sh preflight` because they get likelier with eight nodes: every
+`IB_HCA` device must carry an IPv4 RoCE v2 GID at `NCCL_IB_GID_INDEX` (the valid index can differ per node
+and otherwise fails as an opaque NCCL init error, issue #2), and a node whose idle SM clock sits under 60 % of
+the fleet median is reported, because one slow rank gates the whole TP group (a post-crash GB10 stuck at
+721-890 MHz is recorded in tony's README).
 
 ## TP8 versus TP4xPP2 versus EP
 
@@ -108,11 +125,35 @@ two all-reduces per layer and 79 layers, that floor matters at c4 and above. The
 - **EP (experts across nodes).** 32 experts per node with full-width GEMMs (better Marlin efficiency), but
   two all-to-alls per MoE layer over RoCE and load imbalance at c1-c4, where a token touches 8 of 256 experts.
   MLA attention would still be TP or DP. Not supported by this stack's MoE hooks; not a first step.
-- **DCP inside TP8** would stop replicating the MLA latent KV eight times, but the Triton MLA kernels refuse
-  DCP. A later option if context capacity, rather than speed, becomes the goal.
+- **DCP (decode context parallel).** Shards the MLA latent KV across ranks instead of replicating it.
+  Measured elsewhere on 4 Sparks with TP4 + DCP4 (tonyd2wild's README and @ajclark's issue #4, different vLLM
+  base, fp8/NVFP4 KV, DFlash2): at 8 GB/rank the pool grew 4.00x (131,072 to 524,288 tokens); decode about
+  -5 % on a switch (-22 % on a ring); prefill fell to roughly 340-415 tok/s at every length. TP4 + DCP4 on the
+  existing four nodes may therefore beat TP8 on capacity per node, but not on speed. Here the Triton MLA
+  kernels, K-stop and the DSA shortcut all refuse DCP, so it is a port, not a switch. TP8 + DCP8 would hold
+  one KV copy over eight nodes, at the same prefill cost.
 
 Recommendation: TP8 for single-stream latency and context capacity, with TP4xPP2 as the fallback if
 measured TP8 collectives eat the weight-streaming gain.
+
+## Items from tonyd2wild issue #8
+
+[@ajclark's report](https://github.com/tonyd2wild/GLM-5.3-Int4-Int8Mix-TP4-4x-DGX-Spark/issues/8) lists speedups
+from a vLLM 0.29.0, TP4/DCP2, switchless-ring, DFlash2 stack. Evaluated against this recipe:
+
+| Item | Verdict here |
+|---|---|
+| NCCL on both PCIe links | Already done: `IB_HCA` names both twins of port 0. Their port-1 twin addressing exists for ring NIC merging; not needed on a switch. TP8 keeps the same layout. |
+| Draft-aware verify cap (K 1/3/5/7 of DFlash2's 7) | Same idea as this recipe's K-stop confidence stop on native MTP (K <= 3). No change. |
+| Int8 drafter `fc` split over TP, deterministic conv Marlin | DFlash2-specific. `VLLM_MARLIN_USE_ATOMIC_ADD` is not set here and MoE alignment is deterministic. No change. |
+| FP8 draft head | This recipe's NVFP4 draft head is the same lever. At TP8 both hit the Marlin N % 64 tile on the 19,360-row vocab shard; padding the bank to 19,392 rows would restore either. Follow-up. |
+| RoCEnante for DCP collectives, DCP combine, prefill gathers | Only meaningful with DCP, which this stack does not run (see DCP above). |
+| L2 prefetch during collectives | Not in this recipe. TP8 spends more time in collectives, so overlap has more to hide. Follow-up, needs GPU work. |
+| Vocab-parallel greedy argmax | Relevant to TP8: K-stop all-gathers 154,880 logit columns per draft pass. Max and logsumexp decompose over vocab shards (local max/sum-exp, then two small all-reduces), replacing the gather. The FP32 probabilities would change reduction order, so K-stop's guard and tau need requalification. Follow-up. |
+| Prefix-hit fix (all-groups EAGLE fallback in the KV coordinator) | Concerns hybrid sliding-window drafter groups. Native MTP here has no such group, and the release measured 64,896/65,024 APC hit tokens. No change. |
+| Voice-first scheduler, NVMe KV tier | Out of scope for TP8. |
+
+Taken into this branch: the corrected fabric layout above, and the per-node GID and clock checks in preflight.
 
 ## Risks
 
@@ -125,6 +166,9 @@ measured TP8 collectives eat the weight-streaming gain.
   gains (L2 hints +0.2-2.9 % per stream, attention front about 0.4 ms per c1 cycle) and with the BF16 draft head.
 - Twice the nodes double the failure domain, the boot-time weight verification and the fabric to configure.
 - The gate and bench tooling is TP4-only; a TP8 release gate needs it generalised first.
+- A passing NCCL probe does not prove vLLM will start (issue #2: lazy connect hides unreachable graph edges);
+  only a real boot is evidence. Never run NCCL probe containers while a ~95 GB model loads (global OOM).
+- One slow or misconfigured node out of eight gates every step; the preflight warns on clocks and GIDs only.
 
 ## Using it
 
@@ -159,6 +203,8 @@ RoCEnante at eight peers, K-stop guards across eight ranks, quality and speed. T
 2. NCCL connection count and pinned memory at TP8; is `RECIPE_NCCL_NO_LL128=1` needed?
 3. c1/c4 decode and prefill versus TP4 on the same day; how much do 8-rank collectives cost per step?
 4. Does the H8 split MLA match the stock FlashInfer sparse MLA within the TP4 tolerance on GB10?
-5. Switch choice and RoCE QoS (PFC/ECN) for both rails; RoCEnante timeouts or retransmits at 8 peers?
+5. Switch choice (8+ ports at 200G) and RoCE QoS (PFC/ECN); RoCEnante timeouts or retransmits at 8 peers?
 6. Is a padded (19,392-row) draft head bank worth building to restore the NVFP4 draft head and eh_proj?
 7. New Marlin L2-hint specialisations for 6144x512 / 256x6144 and an H8 attention-front kernel: worth it?
+8. Does TP4 + DCP4 on the existing nodes beat TP8 for long-context capacity once its prefill cost is measured here?
+9. How many milliseconds per step does the full-vocab logits all-gather cost at TP8, i.e. is vocab-parallel argmax worth it?
