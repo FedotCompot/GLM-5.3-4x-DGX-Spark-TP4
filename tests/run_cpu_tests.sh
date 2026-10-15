@@ -28,7 +28,7 @@ python3 -B "$ROOT/tests/test_decode_fair.py"
 python3 -B "$ROOT/tests/test_decode_timeslice.py"
 python3 -B "$ROOT/tests/test_decode_fair_probe.py"
 python3 -B "$ROOT/tests/test_t0_probe.py"
-DEPS=(torch numpy regex transformers pydantic cachetools msgspec pyzmq psutil cloudpickle blake3 openai prometheus_client pyyaml sentencepiece tiktoken einops cbor2 aiohttp openai-harmony pillow pybase64 uvloop py-cpuinfo llguidance xgrammar safetensors)
+DEPS=(torch numpy regex transformers pydantic cachetools msgspec pyzmq psutil cloudpickle blake3 openai prometheus_client pyyaml sentencepiece tiktoken einops cbor2 aiohttp openai-harmony pillow pybase64 uvloop py-cpuinfo llguidance xgrammar safetensors triton)
 if [[ -n ${GLM_CPU_PYTHON:-} ]]; then
     PY=("$GLM_CPU_PYTHON")
 else
@@ -54,6 +54,7 @@ fi
 "${PY[@]}" -B "$ROOT/tests/test_w4_integration.py"
 "${PY[@]}" -B "$ROOT/tests/test_skip_mla_plan.py"
 "${PY[@]}" -B "$ROOT/tests/test_kernel_cpu.py"
+TRITON_INTERPRET=1 "${PY[@]}" -B "$ROOT/tests/test_mla_heads.py"
 "${PY[@]}" -B "$ROOT/tests/test_glm_fast_load.py"
 "${PY[@]}" -B "$ROOT/tests/test_coalesced_load.py"
 "${PY[@]}" -B "$ROOT/tests/test_loader_guard.py"
