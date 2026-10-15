@@ -86,7 +86,7 @@ class Selection(unittest.TestCase):
         self.assertEqual((env['RECIPE_TP_SIZE'], env['GLM_DRAFT_HEAD']), ('8', '0'))
 
 
-class Rendering(unittest.TestCase):
+class ClusterCase(unittest.TestCase):
     def cluster(self, env):
         self.enterContext(patch.dict(os.environ, env, clear=True))
         module = load_cluster()
@@ -96,6 +96,8 @@ class Rendering(unittest.TestCase):
         self.enterContext(patch.object(module, 'dispram_guard_present', lambda: True))
         return module
 
+
+class Rendering(ClusterCase):
     def test_tp8_renders_eight_ranks(self):
         C = self.cluster(layered_env(8))
         C.validate()
@@ -160,6 +162,51 @@ class Rendering(unittest.TestCase):
         with patch.dict(os.environ, dict(layered_env(8), RECIPE_TP_SIZE='16'), clear=True):
             with self.assertRaisesRegex(ValueError, 'RECIPE_TP_SIZE must be one of 4, 8'):
                 load_cluster()
+
+
+class Fabric(ClusterCase):
+    def sysfs(self, root, dev, kind, gid, port='1', index='3'):
+        base = Path(root, dev, 'ports', port)
+        (base / 'gid_attrs/types').mkdir(parents=True)
+        (base / 'gids').mkdir()
+        (base / 'gid_attrs/types' / index).write_text(kind + '\n')
+        (base / 'gids' / index).write_text(gid + '\n')
+
+    def run_gid_code(self, C, root):
+        code = C.gid_code().replace('/sys/class/infiniband', root)
+        out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_gid_check_per_hca(self):
+        C = self.cluster(layered_env(8))
+        ipv4 = '0000:0000:0000:0000:0000:ffff:c000:0201'
+        with tempfile.TemporaryDirectory() as d:
+            self.sysfs(d, 'hca0', 'RoCE v2', ipv4)
+            self.sysfs(d, 'hca1', 'RoCE v2', ipv4)
+            self.assertEqual(C.gid_problems(self.run_gid_code(C, d)), [])
+        with tempfile.TemporaryDirectory() as d:
+            self.sysfs(d, 'hca0', 'IB/RoCE v1', ipv4)
+            self.sysfs(d, 'hca1', 'RoCE v2', 'fe80:0000:0000:0000:0000:0000:0000:0001')
+            problems = C.gid_problems(self.run_gid_code(C, d))
+            self.assertEqual(len(problems), 2)
+            self.assertIn('not RoCE v2', problems[0])
+            self.assertIn('not IPv4-mapped', problems[1])
+        with tempfile.TemporaryDirectory() as d:
+            self.sysfs(d, 'hca0', 'RoCE v2', ipv4)
+            self.assertIn('hca1 GID 3', C.gid_problems(self.run_gid_code(C, d))[0])
+
+    def test_gid_index_and_ports_follow_config(self):
+        C = self.cluster(layered_env(8))
+        with patch.dict(C.ENV, IB_HCA='=rocep1s0f0:1,roceP2p1s0f0', NCCL_IB_GID_INDEX='4'):
+            self.assertEqual(C.fabric_hcas(), [('rocep1s0f0', '1'), ('roceP2p1s0f0', '1')])
+            self.assertIn("'4'", C.gid_code())
+
+    def test_slow_node_clock_advisory(self):
+        C = self.cluster(layered_env(8))
+        clocks = [2410, 2405, 890, 2418, 2400, None, 2411, 2409]
+        self.assertEqual(C.clock_outliers(clocks), [(2, 890, 2409)])
+        self.assertEqual(C.clock_outliers([None] * 8), [])
+        self.assertEqual(C.clock_outliers([2400] * 8), [])
 
 
 class Profile(unittest.TestCase):

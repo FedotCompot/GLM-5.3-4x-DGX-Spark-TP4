@@ -908,6 +908,51 @@ def verify_command(path, manifest, mode='cached'):
     return command
 
 
+def fabric_hcas():
+    """(device, port) for each IB_HCA entry; 'dev' or 'dev:port'."""
+    out = []
+    for item in ENV['IB_HCA'].split(','):
+        name, _, port = item.strip().lstrip('=^').partition(':')
+        if name:
+            out.append((name, port or '1'))
+    return out
+
+
+def gid_index():
+    return ENV.get('NCCL_IB_GID_INDEX', '3').strip() or '3'
+
+
+def gid_code():
+    """Remote program: GID type and value at the configured index for every fabric HCA."""
+    return ('import json,pathlib\nout={}\n'
+            'for dev,port in %r:\n'
+            ' base=pathlib.Path("/sys/class/infiniband")/dev/"ports"/port\n'
+            ' try:out[dev]=dict(type=(base/"gid_attrs/types"/%r).read_text().strip(),gid=(base/"gids"/%r).read_text().strip())\n'
+            ' except OSError as exc:out[dev]=dict(type="missing",gid=str(exc))\n'
+            'print(json.dumps(out))' % (fabric_hcas(), gid_index(), gid_index()))
+
+
+def gid_problems(report):
+    """Every HCA needs an IPv4-mapped RoCE v2 GID at the shared index; it can differ per node."""
+    problems = []
+    for dev, _ in fabric_hcas():
+        row = report.get(dev, dict(type='missing', gid=''))
+        if row['type'] != 'RoCE v2':
+            problems.append('%s GID %s is %r, not RoCE v2' % (dev, gid_index(), row['type']))
+        elif not row['gid'].startswith('0000:0000:0000:0000:0000:ffff:'):
+            problems.append('%s GID %s is not IPv4-mapped (%s)' % (dev, gid_index(), row['gid']))
+    return problems
+
+
+def clock_outliers(clocks, ratio=0.6):
+    """Idle SM clocks far under the fleet median; one slow rank gates the whole TP group."""
+    known = sorted(c for c in clocks if c is not None)
+    if not known:
+        return []
+    median = known[len(known) // 2]
+    return [(rank, clock, median) for rank, clock in enumerate(clocks) if clock is not None and clock < ratio * median]
+
+
 def preflight(ctn):
     # Two independent single-thread checksum streams; preserve every rank receipt.
     def check_rank(rank):
@@ -953,17 +998,26 @@ print(json.dumps(dict(architecture=image['Architecture'],image=image['Id'],MemAv
         if IPS[rank] + '/' not in addresses:
             raise RuntimeError('Fabric IP/interface mismatch on ' + HOSTS[rank])
         remote(rank, 'sudo -n -l /usr/local/sbin/spark-compact-mem.sh >/dev/null')
+        problems = gid_problems(json.loads(remote(rank, 'python3 -c ' + shlex.quote(gid_code()))))
+        if problems:
+            raise RuntimeError('RoCE GID mismatch on %s: %s' % (HOSTS[rank], '; '.join(problems)))
+        clock = remote(rank, 'nvidia-smi --query-gpu=clocks.sm --format=csv,noheader,nounits').split()
+        return int(clock[0]) if clock and clock[0].isdigit() else None
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         # Await every task, including failures, before admitting any container.
         results = [pool.submit(check_rank, rank) for rank in RANKS]
-        errors = []
+        errors, clocks = [], []
         for rank, future in enumerate(results):
             try:
-                future.result()
+                clocks.append(future.result())
             except Exception as exc:
+                clocks.append(None)
                 errors.append((rank, str(exc)))
         if errors:
             raise RuntimeError('Preflight failed: ' + repr(errors))
+    for rank, clock, median in clock_outliers(clocks):
+        print('WARNING: %s idle SM clock %d MHz is under 60%% of the fleet median %d MHz; '
+              'check it before trusting throughput' % (HOSTS[rank], clock, median), flush=True)
     print('PREFLIGHT PASS', flush=True)
 
 
