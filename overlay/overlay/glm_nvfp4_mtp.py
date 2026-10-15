@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""TP4 native MTP experts, three existing Marlin GEMMs, independent globals.
+"""TP4/TP8 native MTP experts, three existing Marlin GEMMs, independent globals.
 
 The stock NVFP4 MoE method silently uses gate's global for up. Split gate/up
 instead, exactly like attention's independent A projections. No new kernel.
@@ -90,8 +90,8 @@ def new_method(moe):
             super().__init__(moe,use_a16=True)
             if self.nvfp4_backend.value != 'MARLIN':
                 raise ValueError('MTP requires the pinned Marlin W4A16 backend')
-            if moe.tp_size != 4 or moe.ep_size != 1 or not moe.is_act_and_mul:
-                raise ValueError('qualified MTP layout requires TP4, EP1, SiLU gate/up')
+            if moe.tp_size not in (4, 8) or moe.ep_size != 1 or not moe.is_act_and_mul:
+                raise ValueError('qualified MTP layout requires TP4 or TP8, EP1, SiLU gate/up')
         def create_weights(self,layer,*args,**kwargs):
             super().create_weights(layer,*args,**kwargs)
             # No activation scales are read or emitted in W4A16 mode.

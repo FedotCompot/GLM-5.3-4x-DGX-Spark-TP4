@@ -200,5 +200,15 @@ DRY=1 ./start.sh serve
 ```
 
 Keep management recovery access working; no public router port forwarding is needed.
+
+**Abliterated checkpoint (unqualified).** `RECIPE_MODEL=abliterated` switches to
+[Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix](https://huggingface.co/Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix),
+the same Int4-Int8Mix layout with modified `o_proj`/`down_proj` weights, from its own paths and its own NVFP4
+sidecars; preflight refuses sidecars converted from the other tree. Steps and caveats: [docs/weights.md](docs/weights.md).
+
+**Eight Sparks (TP8, unqualified).** Set `RECIPE_TP_SIZE=8` and eight `HOSTS`/`IPS`/`IMAGES` in `.env`;
+`profiles/tp8.env` then layers on top of the release profile (a 4x larger shared KV pool, with the draft head,
+eh_proj, L2 hints and attention front off). Nothing at TP8 has booted on hardware yet; the plan, memory
+projection, fabric needs and risks are in [docs/tp8.md](docs/tp8.md).
 Thinking off uses `chat_template_kwargs: {"enable_thinking": false}`; RigMark uses effort low.
 Tool parser `glm47`, reasoning parser `glm45`. The coalesced loader is opt-in (`GLM_LOADER=coalesced`).

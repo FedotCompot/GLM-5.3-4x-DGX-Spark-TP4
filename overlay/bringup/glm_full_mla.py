@@ -36,7 +36,7 @@ def install(mod):
         import torch
         if not isinstance(q, tuple) or len(q) != 2 or md is None:
             raise RuntimeError('glm-full-mla: split queries and metadata required')
-        if self.num_heads != 16 or self.kv_lora_rank != 512 or self.qk_rope_head_dim not in (0, 64):
+        if self.num_heads not in (8, 16) or self.kv_lora_rank != 512 or self.qk_rope_head_dim not in (0, 64):
             raise RuntimeError('glm-full-mla: unsupported dimensions')
         if getattr(self, 'dcp_world_size', 1) != 1:
             raise RuntimeError('glm-full-mla: DCP unsupported')
@@ -52,6 +52,9 @@ def install(mod):
         if fp8 and not packed:
             cache = cache.view(torch.float8_e4m3fn)
         ks = float(layer._k_scale_float or 1.0) if fp8 and not packed else 1.0
+        if self.num_heads == 8:
+            from glm_mla_heads import forward as heads8
+            return heads8(self, q, cache, slots, md, ks, packed), None
         if packed and getattr(md, 'num_prefills', 0) and t > md.num_decode_tokens:
             from glm_fp4_mla_prefill import prefill_mla
             nd = md.num_decode_tokens
@@ -80,7 +83,7 @@ def install(mod):
     forward._glm_full_mla = True
     forward._glm_kv_format = "fp4x" if packed else "fp8"
     cls.forward_mqa = forward
-    sys.stderr.write('glm-full-mla: ARMED triton H16 D512 R0|64; capture enabled\n')
+    sys.stderr.write('glm-full-mla: ARMED triton H16|H8 D512 R0|64; capture enabled\n')
 
 
 def register(env=None):

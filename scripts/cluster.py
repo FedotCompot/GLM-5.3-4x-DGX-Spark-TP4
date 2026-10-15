@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workstation launcher for four TP ranks; dry rendering has no fleet access."""
+"""Workstation launcher for RECIPE_TP_SIZE ranks (4 or 8); dry rendering has no fleet access."""
 import concurrent.futures
 import hashlib
 import json
@@ -17,9 +17,12 @@ import uuid
 ROOT = Path(os.environ['RECIPE_ROOT'])
 sys.path.insert(0, str(ROOT/'scripts'))
 ENV = os.environ
+import topology
+TP = topology.tp_size(ENV)
+RANKS = range(TP)
 HOSTS = ENV['RECIPE_HOSTS'].split()
 IPS = ENV['RECIPE_IPS'].split()
-IMAGES = ENV.get('RECIPE_IMAGES', '').split() or [ENV['IMAGE']] * 4
+IMAGES = ENV.get('RECIPE_IMAGES', '').split() or [ENV['IMAGE']] * TP
 STATE = ROOT / 'state/deployment.json'
 SERVE_ARGS = Path(ENV.get('RECIPE_SERVE_ARGS', ROOT / 'profiles/serve-args.json'))
 # RECIPE_* lines in current.env are launch-shape switches read here; they never enter a container.
@@ -32,6 +35,45 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
                     'GLM_MOE_DET_ALIGN', 'GLM_INDEXER_STABLE_TOPK', 'GLM_INDEXER_ROW_SHARD',
                     'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_MARLIN_L2HINT', 'GLM_ATTN_FRONT_FUSE')]
 GiB = 1 << 30
+# RECIPE_MODEL -> manifests/<kind>.json; both share the target's config, index and shapes (docs/weights.md).
+MODEL_MANIFESTS = {'stock': 'target', 'abliterated': 'abliterated'}
+# Repo@revision per manifest, so DRY needs no manifests/ tree.
+MODEL_IDS = {'target': 'Tech2wild/GLM-5.3-Int4-Int8Mix@206507bbb047d8223964a0414cd83230c59428f9',
+             'abliterated': 'Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix@08a92f9da01cd90d591edb3fdd71c2ccc9f37ddd'}
+
+
+def model_kind():
+    choice = ENV.get('RECIPE_MODEL', '').strip() or 'stock'
+    if choice not in MODEL_MANIFESTS:
+        raise ValueError('RECIPE_MODEL must be stock or abliterated')
+    return MODEL_MANIFESTS[choice]
+
+
+def model_manifest():
+    return json.loads((ROOT / 'manifests' / (model_kind() + '.json')).read_text())
+
+
+def sidecar_dirs():
+    """Host NVFP4 sidecar directories the containers will mount."""
+    if ENV.get('GLM_ATTN_WEIGHTS', 'int8') != 'nvfp4':
+        return []
+    dirs = [ENV['GLM_ATTN_NVFP4_DIR']]
+    if ENV.get('GLM_NVFP4_GROUPS', 'attn') != 'attn':
+        dirs.append(ENV['GLM_NVFP4_MORE_DIR'])
+    return dirs
+
+
+def sidecar_problems(sidecar, manifest):
+    """Source files a sidecar was converted from that differ from the selected checkpoint."""
+    shas = {f['f']: f['sha256'] for f in manifest['files']}
+    source = sidecar.get('source') or {}
+    shards = source.get('shards') or {}
+    problems = [] if shards else ['no recorded source shards']
+    problems += [name for name, digest in sorted(shards.items()) if shas.get(name) != digest]
+    for key, name in (('index_sha256', 'model.safetensors.index.json'), ('config_sha256', 'config.json')):
+        if source.get(key) != shas.get(name):
+            problems.append(name)
+    return problems
 HEALTH_POLL_S = 1          # loopback /health while booting
 SAMPLE_BOOT_S = 5          # rank samples (memory floors, admission window) while booting
 SAMPLE_STEADY_S = 10       # rank samples once admitted
@@ -173,6 +215,8 @@ def launch_switches():
     packed_length = (mode == 'fp4x' and values['RECIPE_MAX_MODEL_LEN'].isdigit()
                      and 64 <= int(values['RECIPE_MAX_MODEL_LEN']) <= packed_cap
                      and int(values['RECIPE_MAX_MODEL_LEN']) % 64 == 0)
+    if packed_length and int(values['RECIPE_MAX_MODEL_LEN']) > topology.MODEL['max_position']:
+        raise ValueError('RECIPE_MAX_MODEL_LEN exceeds the model max_position_embeddings')
     if values['RECIPE_MAX_MODEL_LEN'] not in MAX_MODEL_LENS and not packed_length:
         raise ValueError('RECIPE_MAX_MODEL_LEN must be one of ' + ', '.join(MAX_MODEL_LENS))
     values['GLM_MTP_KSTOP'] = ENV.get('GLM_MTP_KSTOP', '0').strip()
@@ -211,7 +255,42 @@ def launch_switches():
         raise ValueError('launch switches apply to the native-mtp-k2 profile only: ' + ', '.join(changed))
     dispram()
     optional_env()
+    tp_gates()
     return values
+
+
+# Levers with TP4-only shapes or kernels: (key, off value, reason).
+TP4_ONLY = (('GLM_DRAFT_HEAD', '0', 'per-rank vocab 19360 is not a Marlin multiple of 64'),
+            ('GLM_DRAFT_EHPROJ', '0', 'qualified only with the NVFP4 draft head'),
+            ('GLM_ATTN_FRONT_FUSE', '0', 'H16 kernel and admitted shapes'),
+            ('GLM_MARLIN_L2HINT', 'off', 'specialised for TP4 MoE GEMM shapes'),
+            ('GLM_MARLIN_L2HINT_AB', '0', 'specialised for TP4 MoE GEMM shapes'),
+            ('GLM_INDEXER_ROW_SHARD', '0', 'four-way row partition'),
+            ('GLM_INDEXER_STABLE_TOPK', '0', 'TP4-only startup check'))
+
+
+def tp_gates():
+    """Refuse TP4-only levers and profiles at any other TP size (docs/tp8.md)."""
+    if TP == 4:
+        return
+    if ENV.get('RECIPE_PROFILE', 'native-mtp-k2') != 'native-mtp-k2':
+        raise ValueError('RECIPE_TP_SIZE=%d supports the native-mtp-k2 profile only' % TP)
+    for key, off, why in TP4_ONLY:
+        if (ENV.get(key, off).strip() or off) != off:
+            raise ValueError('%s is TP4-only (%s); set %s=%s with RECIPE_TP_SIZE=%d' % (key, why, key, off, TP))
+
+
+def tp_shape(args):
+    """Write the TP size into the saved vector; TP4 leaves it byte-identical."""
+    args = list(args)
+    args[args.index('--tensor-parallel-size') + 1] = str(TP)
+    args[args.index('--nnodes') + 1] = str(TP)
+    i = args.index('--speculative-config') + 1
+    spec = json.loads(args[i])
+    if spec.get('draft_tensor_parallel_size', TP) != TP:
+        spec['draft_tensor_parallel_size'] = TP
+        args[i] = json.dumps(spec)
+    return args
 
 
 def kstop_layout(values):
@@ -248,7 +327,7 @@ def kstop_capture_sizes():
 def launch_shape(args):
     """Apply the launch-shape switches to a copy of the saved native K2 vector."""
     switches = launch_switches()
-    args = list(args)
+    args = tp_shape(args)
     if ENV.get('RECIPE_PROFILE', 'native-mtp-k2') != 'native-mtp-k2':
         return args                     # other profiles keep their saved vector (switches are at defaults)
     if switches['RECIPE_C4_PASS2_GRAPH'] == '1':
@@ -307,9 +386,9 @@ def kstop_note():
 
 
 def validate():
-    if len(HOSTS) != 4 or len(IPS) != 4 or len(IMAGES) != 4:
-        raise ValueError('Exactly four hosts, fabric addresses and images required')
-    if len(set(HOSTS)) != 4 or len(set(IPS)) != 4:
+    if len(HOSTS) != TP or len(IPS) != TP or len(IMAGES) != TP:
+        raise ValueError('Exactly %d hosts, fabric addresses and images required (RECIPE_TP_SIZE=%d)' % (TP, TP))
+    if len(set(HOSTS)) != TP or len(set(IPS)) != TP:
         raise ValueError('Hostnames and fabric addresses must be unique')
     for host in HOSTS:
         if not re.fullmatch(r'[A-Za-z0-9_.@-]+', host):
@@ -331,11 +410,11 @@ def validate():
 
 
 def nccl_hashes():
-    # One hash for identical binaries, or four comma-separated hashes in HOSTS order.
+    # One hash for identical binaries, or one comma-separated hash per host in HOSTS order.
     values = ENV['NCCL_SHA256'].split(',')
-    values = values * 4 if len(values) == 1 else values
-    if len(values) != 4 or any(not re.fullmatch(r'[0-9a-f]{64}', v) for v in values):
-        raise ValueError('NCCL_SHA256 must be one SHA256 or four comma-separated SHA256 values in host order')
+    values = values * TP if len(values) == 1 else values
+    if len(values) != TP or any(not re.fullmatch(r'[0-9a-f]{64}', v) for v in values):
+        raise ValueError('NCCL_SHA256 must be one SHA256 or %d comma-separated SHA256 values in host order' % TP)
     return values
 
 
@@ -547,7 +626,7 @@ def prefill_control(chunk, sequence):
     control = dict(schema=1, chunk=chunk, sequence=sequence)
     code = 'import json,os,pathlib; p=pathlib.Path(PATH); q=p.with_name(p.name+".new"); q.write_text(PAYLOAD); os.replace(q,p); print(p.read_text())'
     code = code.replace('PATH', repr(ENV['OVERLAY_REMOTE'] + '/cache/d2w2-prefill-control.json')).replace('PAYLOAD', repr(json.dumps(control)))
-    for rank in range(4):
+    for rank in RANKS:
         if json.loads(remote(rank, 'python3 -c ' + shlex.quote(code))) != control:
             raise RuntimeError('Prefill readback disagreement')
 
@@ -654,7 +733,7 @@ def jit_prep(ctn):
         return built
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         # Fail closed: every rank must finish before compaction and launch.
-        futures = [pool.submit(prep_rank, rank) for rank in range(4)]
+        futures = [pool.submit(prep_rank, rank) for rank in RANKS]
         errors = []
         for rank, future in enumerate(futures):
             try:
@@ -749,7 +828,7 @@ def persistent_cache_seed(ctn):
         status, key = persist_result(out, 'seed')
         return dict(image=image_id, key=key, seed=status)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(seed_rank, rank) for rank in range(4)]
+        futures = [pool.submit(seed_rank, rank) for rank in RANKS]
         result, errors = {}, []
         for rank, future in enumerate(futures):
             try:
@@ -781,7 +860,7 @@ class PersistentCacheSave:
         self.results, self.reported = {}, set()
         self.lock = threading.Lock()
         self.threads = []
-        for rank in range(4):
+        for rank in RANKS:
             t = threading.Thread(target=self._run, args=(rank,), name=f'pcache-save-r{rank}', daemon=True)
             t.start()
             self.threads.append(t)
@@ -868,6 +947,51 @@ def verify_command(path, manifest, mode='cached'):
     return command
 
 
+def fabric_hcas():
+    """(device, port) for each IB_HCA entry; 'dev' or 'dev:port'."""
+    out = []
+    for item in ENV['IB_HCA'].split(','):
+        name, _, port = item.strip().lstrip('=^').partition(':')
+        if name:
+            out.append((name, port or '1'))
+    return out
+
+
+def gid_index():
+    return ENV.get('NCCL_IB_GID_INDEX', '3').strip() or '3'
+
+
+def gid_code():
+    """Remote program: GID type and value at the configured index for every fabric HCA."""
+    return ('import json,pathlib\nout={}\n'
+            'for dev,port in %r:\n'
+            ' base=pathlib.Path("/sys/class/infiniband")/dev/"ports"/port\n'
+            ' try:out[dev]=dict(type=(base/"gid_attrs/types"/%r).read_text().strip(),gid=(base/"gids"/%r).read_text().strip())\n'
+            ' except OSError as exc:out[dev]=dict(type="missing",gid=str(exc))\n'
+            'print(json.dumps(out))' % (fabric_hcas(), gid_index(), gid_index()))
+
+
+def gid_problems(report):
+    """Every HCA needs an IPv4-mapped RoCE v2 GID at the shared index; it can differ per node."""
+    problems = []
+    for dev, _ in fabric_hcas():
+        row = report.get(dev, dict(type='missing', gid=''))
+        if row['type'] != 'RoCE v2':
+            problems.append('%s GID %s is %r, not RoCE v2' % (dev, gid_index(), row['type']))
+        elif not row['gid'].startswith('0000:0000:0000:0000:0000:ffff:'):
+            problems.append('%s GID %s is not IPv4-mapped (%s)' % (dev, gid_index(), row['gid']))
+    return problems
+
+
+def clock_outliers(clocks, ratio=0.6):
+    """Idle SM clocks far under the fleet median; one slow rank gates the whole TP group."""
+    known = sorted(c for c in clocks if c is not None)
+    if not known:
+        return []
+    median = known[len(known) // 2]
+    return [(rank, clock, median) for rank, clock in enumerate(clocks) if clock is not None and clock < ratio * median]
+
+
 def preflight(ctn):
     # Two independent single-thread checksum streams; preserve every rank receipt.
     def check_rank(rank):
@@ -899,13 +1023,20 @@ print(json.dumps(dict(architecture=image['Architecture'],image=image['Id'],MemAv
                       OVERLAY=ENV['OVERLAY_REMOTE'], MODEL=ENV['MODEL_DIR'], DRAFT=ENV['DRAFT_DIR'],
                       NCCL=ENV['NCCL_HOST_DIR'], EXTERNAL_DRAFT=uses_external_draft(), HEAD=rank == 0).items())
         print(HOSTS[rank], remote(rank, 'python3 -c ' + shlex.quote(setup + '\n' + code)))
-        checkpoints = [('target', ENV['MODEL_DIR'])]
+        checkpoints = [(model_manifest(), ENV['MODEL_DIR'])]
         if uses_external_draft():
-            checkpoints.append(('drafter', ENV['DRAFT_DIR']))
-        for kind, path in checkpoints:
-            manifest = json.loads((ROOT / f'manifests/{kind}.json').read_text())
+            checkpoints.append((json.loads((ROOT / 'manifests/drafter.json').read_text()), ENV['DRAFT_DIR']))
+        for manifest, path in checkpoints:
             result = remote(rank, verify_command(path, manifest, ENV.get('VERIFY_WEIGHTS', 'cached')), timeout=1200)
             print(HOSTS[rank], result, flush=True)
+        # Index and config alone match across same-shape checkpoints; shards prove provenance.
+        for path in sidecar_dirs():
+            problems = sidecar_problems(json.loads(remote(rank, 'cat ' + shlex.quote(path + '/manifest.json'))),
+                                        checkpoints[0][0])
+            if problems:
+                raise RuntimeError('NVFP4 sidecar %s was not converted from %s (%d source files differ, e.g. %s); '
+                                   'reconvert it from MODEL_DIR (docs/NVFP4-SIDECARS.md)'
+                                   % (path, checkpoints[0][0]['repo'], len(problems), problems[0]))
         sha = remote(rank, 'sha256sum ' + shlex.quote(ENV['NCCL_HOST_DIR'] + '/libnccl.so.2.30.7')).split()[0]
         if sha != nccl_hashes()[rank]:
             raise RuntimeError('NCCL binary hash mismatch on ' + HOSTS[rank])
@@ -913,17 +1044,26 @@ print(json.dumps(dict(architecture=image['Architecture'],image=image['Id'],MemAv
         if IPS[rank] + '/' not in addresses:
             raise RuntimeError('Fabric IP/interface mismatch on ' + HOSTS[rank])
         remote(rank, 'sudo -n -l /usr/local/sbin/spark-compact-mem.sh >/dev/null')
+        problems = gid_problems(json.loads(remote(rank, 'python3 -c ' + shlex.quote(gid_code()))))
+        if problems:
+            raise RuntimeError('RoCE GID mismatch on %s: %s' % (HOSTS[rank], '; '.join(problems)))
+        clock = remote(rank, 'nvidia-smi --query-gpu=clocks.sm --format=csv,noheader,nounits').split()
+        return int(clock[0]) if clock and clock[0].isdigit() else None
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         # Await every task, including failures, before admitting any container.
-        results = [pool.submit(check_rank, rank) for rank in range(4)]
-        errors = []
+        results = [pool.submit(check_rank, rank) for rank in RANKS]
+        errors, clocks = [], []
         for rank, future in enumerate(results):
             try:
-                future.result()
+                clocks.append(future.result())
             except Exception as exc:
+                clocks.append(None)
                 errors.append((rank, str(exc)))
         if errors:
             raise RuntimeError('Preflight failed: ' + repr(errors))
+    for rank, clock, median in clock_outliers(clocks):
+        print('WARNING: %s idle SM clock %d MHz is under 60%% of the fleet median %d MHz; '
+              'check it before trusting throughput' % (HOSTS[rank], clock, median), flush=True)
     print('PREFLIGHT PASS', flush=True)
 
 
@@ -939,7 +1079,7 @@ def unlock(token):
 
 def page_cache_state(action):
     if ENV.get('RECIPE_PAGE_CACHE_POLICY', '0') == '1':
-        for rank in range(4):
+        for rank in RANKS:
             remote(rank, 'python3 /usr/local/sbin/glm-page-cache-policy.py ' + action, timeout=45)
 
 
@@ -956,7 +1096,7 @@ def stop(deployment):
             raise RuntimeError('container still running')
     failed = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(stop_rank, rank) for rank in range(4)]
+        futures = [pool.submit(stop_rank, rank) for rank in RANKS]
         for rank, future in enumerate(futures):
             try:
                 future.result()
@@ -970,7 +1110,7 @@ def stop(deployment):
     if policy_error is not None:
         raise RuntimeError('Containers stopped; cache policy end failed; lock retained: ' + str(policy_error))
     unlock(deployment['token'])
-    print('Four containers stopped and preserved; owned lock released', flush=True)
+    print('%d containers stopped and preserved; owned lock released' % TP, flush=True)
 
 
 SAMPLE_CODE = '''import json,pathlib,subprocess,re
@@ -1087,9 +1227,9 @@ def monitor(deployment, boot=False):
                 time.sleep((min(next_sample, next_health) if boot and not ready else next_sample) - now)
                 continue
             next_sample = now + (SAMPLE_BOOT_S if boot else SAMPLE_STEADY_S)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=TP // 2) as pool:
                 futures = [pool.submit(remote, rank, 'python3 -c ' + shlex.quote(
-                    'NAME=' + repr(deployment['ctn'] + f'-r{rank}') + '\n' + SAMPLE_CODE)) for rank in range(4)]
+                    'NAME=' + repr(deployment['ctn'] + f'-r{rank}') + '\n' + SAMPLE_CODE)) for rank in RANKS]
                 samples = [json.loads(f.result()) for f in futures]
             with (directory / 'watchdog.jsonl').open('a') as out:
                 out.write(json.dumps(dict(elapsed_s=now-started, samples=samples)) + '\n')
@@ -1144,9 +1284,10 @@ def serve(ctn):
             dry = Path(tmp)/'dry.txt'
             headers = ENV.get('RECIPE_BOOT_PREFLIGHT_HEADERS')
             if headers and Path(headers).is_file():
-                dry.write_text('\n'.join(shlex.join(docker_command(rank, ctn)) for rank in range(4))+'\n')
+                dry.write_text('\n'.join(shlex.join(docker_command(rank, ctn)) for rank in RANKS)+'\n')
             result = advisory(ROOT, dry, Path(tmp)/'report.json', headers,
-                       ENV.get('RECIPE_BOOT_PREFLIGHT_IMAGE'), ENV.get('RECIPE_BOOT_PREFLIGHT', '1') == '1')
+                       ENV.get('RECIPE_BOOT_PREFLIGHT_IMAGE'), ENV.get('RECIPE_BOOT_PREFLIGHT', '1') == '1',
+                       model_kind())
             logdir = ROOT/'logs'/ctn
             logdir.mkdir(parents=True, exist_ok=True)
             (logdir/'cpu-boot-preflight.json').write_text(json.dumps(result, indent=2)+'\n')
@@ -1156,13 +1297,13 @@ def serve(ctn):
     preflight(ctn)
     token = ctn + ':' + uuid.uuid4().hex
     lock(token)
-    deployment = dict(ctn=ctn, token=token, hosts=HOSTS, ips=IPS, images=IMAGES,
+    deployment = dict(ctn=ctn, token=token, hosts=HOSTS, ips=IPS, images=IMAGES, model=model_kind(),
                       runtime=ENV['OVERLAY_REMOTE'], profile=ENV.get('RECIPE_PROFILE', 'native-mtp-k2'), created=time.time())
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(deployment, indent=2) + '\n')
     launched = []
     try:
-        for rank in range(4):
+        for rank in RANKS:
             remote(rank, 'mkdir ' + shlex.quote(ENV['OVERLAY_REMOTE']))
             subprocess.run(['rsync', '-a', '--exclude=__pycache__', str(ROOT / 'overlay') + '/',
                             HOSTS[rank] + ':' + ENV['OVERLAY_REMOTE'] + '/'], check=True)
@@ -1174,20 +1315,20 @@ def serve(ctn):
         jit_prep(ctn)
         hook = dispram()
         if hook is not None:
-            for rank in range(4):
+            for rank in RANKS:
                 subprocess.run(['rsync', '-a', str(ROOT / 'scripts/dispram.sh'),
                                 HOSTS[rank] + ':' + hook.home(ENV) + '/dispram.sh'], check=True)
             hook.ensure(HOSTS, ENV)     # require: raises before any engine starts
-        for rank in range(4):
+        for rank in RANKS:
             remote(rank, 'sudo -n /usr/local/sbin/spark-compact-mem.sh', timeout=180)
             # Compaction must succeed and must preserve the 110 GiB preboot floor.
             available = int(remote(rank, "awk '/MemAvailable/{print $2}' /proc/meminfo"))
             if available < 110 * 1048576:
                 raise RuntimeError('Preboot memory floor after compaction')
         prefill_control(512, 0)
-        deployment['swap_base'] = {rank: int(remote(rank, "awk '/SwapTotal/{t=$2}/SwapFree/{f=$2}END{print t-f}' /proc/meminfo")) for rank in range(4)}
+        deployment['swap_base'] = {rank: int(remote(rank, "awk '/SwapTotal/{t=$2}/SwapFree/{f=$2}END{print t-f}' /proc/meminfo")) for rank in RANKS}
         STATE.write_text(json.dumps(deployment, indent=2) + '\n')
-        for rank in (3, 2, 1, 0):
+        for rank in reversed(RANKS):
             print(HOSTS[rank], remote(rank, shlex.join(docker_command(rank, ctn))), flush=True)
             launched.append(rank)
     except BaseException:
@@ -1232,10 +1373,15 @@ def l2hint_setup():
         print(hashlib.sha256((dest / f).read_bytes()).hexdigest(), 'overlay/l2hint-serving/' + f, flush=True)
 
 
+def model_note():
+    return 'Model: %s (%s)' % (ENV.get('RECIPE_MODEL', '').strip() or 'stock', MODEL_IDS[model_kind()])
+
+
 def main():
     validate()
     launch_switches()
     floors = floors_note()
+    model = model_note()
     command = sys.argv[1] if len(sys.argv) > 1 else 'status'
     ctn = ENV.get('CTN', 'glm53full-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     if not re.fullmatch(r'glm53full-[A-Za-z0-9_-]+', ctn):
@@ -1244,20 +1390,21 @@ def main():
         if command != 'serve':
             raise ValueError('DRY=1 supports serve only')
         if persistent_cache_enabled():
-            for rank in range(4):
+            for rank in RANKS:
                 print(f'# persistent-cache-seed rank={rank} host={HOSTS[rank]} (image ID resolved at serve)')
                 print(shlex.join(persist_command(rank, ctn, 'sha256:' + '0' * 64, 'seed')))
         if kstop_note():
             print('# ' + kstop_note())
         print('# ' + floors)
-        for rank in range(4):
+        print('# ' + model)
+        for rank in RANKS:
             print(f'# jit-prep rank={rank} host={HOSTS[rank]}')
             print(shlex.join(jit_prep_command(rank, ctn)))
-        for rank in (3, 2, 1, 0):
+        for rank in reversed(RANKS):
             print(f'# rank={rank} host={HOSTS[rank]}')
             print(shlex.join(docker_command(rank, ctn)))
         if persistent_cache_enabled():
-            for rank in range(4):
+            for rank in RANKS:
                 print(f'# persistent-cache-save rank={rank} host={HOSTS[rank]} (after admission)')
                 print(shlex.join(persist_command(rank, ctn, 'sha256:' + '0' * 64, 'save', '0' * 32)))
         return
@@ -1295,6 +1442,7 @@ def main():
         if kstop_note():
             print(kstop_note(), flush=True)
         print(floors, flush=True)
+        print(model, flush=True)
         serve(ctn)
         return
     deployment = json.loads(STATE.read_text())
@@ -1306,13 +1454,13 @@ def main():
     elif command == 'watch':
         monitor(deployment)
     elif command == 'status':
-        for rank in range(4):
+        for rank in RANKS:
             print(HOSTS[rank], remote(rank, 'docker inspect -f ' + shlex.quote('{{.State.Running}} {{.State.OOMKilled}}') + ' ' + shlex.quote(deployment['ctn'] + f'-r{rank}')))
         print('health', health())
     elif command == 'logs':
         rank = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-        if rank not in range(4):
-            raise ValueError('rank must be 0..3')
+        if rank not in RANKS:
+            raise ValueError('rank must be 0..%d' % (TP - 1))
         print(remote(rank, 'docker logs --tail 100 ' + shlex.quote(deployment['ctn'] + f'-r{rank}') + ' 2>&1'))
     else:
         raise ValueError('usage: start.sh preflight|serve|status|logs [rank]|watch|stop|dispram-setup')

@@ -47,6 +47,11 @@ def vectors(text):
     return sorted(result,key=lambda v:v['rank'])
 
 
+def world_size(vector):
+    args=vector['args']
+    return int(args[args.index('--tensor-parallel-size')+1]) if '--tensor-parallel-size' in args else 4
+
+
 class Report:
     def __init__(self):self.rows=[];self.started=time.monotonic();self.fakes=[]
     def check(self,name,fn):
@@ -98,7 +103,7 @@ def settings(vector):
     return dict(weights=mode,groups=selected,kv=kvfmt,adaptive=adaptive_on,threshold=threshold,recent=recent)
 
 
-def fake_hardware(report,rank):
+def fake_hardware(report,rank,world=4):
     """FAKE: SM121 capability + TP/PP groups, no drivers/collectives are used.
 
     Retain real quant-method/backend selection. Hardware availability probes
@@ -113,10 +118,10 @@ def fake_hardware(report,rank):
     current_platform.get_device_name=lambda *a,**k:'FAKE SM121 CPU preflight'
     current_platform.get_device_total_memory=lambda *a,**k:128<<30
     import vllm.distributed.parallel_state as ps
-    ps._TP=NS(world_size=4,rank_in_group=rank,device_group=NS(size=lambda:4,rank=lambda:rank))
+    ps._TP=NS(world_size=world,rank_in_group=rank,device_group=NS(size=lambda:world,rank=lambda:rank))
     single=NS(world_size=1,rank_in_group=0,is_first_rank=True,is_last_rank=True,device_group=NS(size=lambda:1,rank=lambda:0))
     ps._PP=single;ps._PCP=single;ps._DCP=single;ps._DP=single;ps._EP=single
-    report.fakes.extend(['SM121 capability and TP4/EP1 group metadata (no collectives)',
+    report.fakes.extend(['SM121 capability and TP%d/EP1 group metadata (no collectives)' % world,
                          'MLA backend GPU implementation; real MLA, projections and indexer constructors run'])
     return current_platform
 
@@ -136,7 +141,7 @@ def fake_silu():
 
 def build(vector,config_dir,report):
     import torch
-    platform=fake_hardware(report,vector['rank'])
+    platform=fake_hardware(report,vector['rank'],world_size(vector))
     from vllm.engine.arg_utils import EngineArgs
     args=vector['args']
     # Consume real launch arguments with the pinned parser; only execution-only
@@ -465,12 +470,12 @@ def worker(a):
                 if not mount or sum(s['source']==mount for s in cache['sidecars'])!=1:
                     raise ValueError('cache sidecar path differs from DRY mount: '+key)
         docs,tensors=unpack(cache['model'])
-        pinned=json.loads((ROOT/'manifests/target.json').read_text())
+        pinned=json.loads((ROOT/'manifests'/(a.model+'.json')).read_text())
         files={f['f']:f for f in pinned['files']}
         for name in ('config.json','model.safetensors.index.json'):
-            if sha(docs[name])!=files[name]['sha256']:raise ValueError('checkpoint metadata differs from pinned target: '+name)
+            if sha(docs[name])!=files[name]['sha256']:raise ValueError('checkpoint metadata differs from pinned '+a.model+': '+name)
         for name,receipt in cache['model']['files'].items():
-            if name not in files or receipt['size']!=files[name]['size']:raise ValueError('checkpoint shard size differs from pinned target: '+name)
+            if name not in files or receipt['size']!=files[name]['size']:raise ValueError('checkpoint shard size differs from pinned '+a.model+': '+name)
         data.update(cache=cache,docs=docs,tensors=tensors)
         for sidecar in cache['sidecars']:unpack(sidecar)
         return dict(checkpoint_tensors=len(tensors),sidecars=len(cache['sidecars']))
@@ -506,27 +511,30 @@ def worker(a):
 
 def host(a):
     vs=vectors(a.dry.read_text())
-    if a.rank is None and [v['rank'] for v in vs]!=list(range(4)):
-        raise ValueError('full preflight requires DRY ranks 0..3; --rank is diagnostic only')
+    world=world_size(vs[0])
+    if any(world_size(v)!=world for v in vs):raise ValueError('DRY ranks disagree on --tensor-parallel-size')
+    if a.rank is None and [v['rank'] for v in vs]!=list(range(world)):
+        raise ValueError('full preflight requires DRY ranks 0..%d; --rank is diagnostic only'%(world-1))
     if a.rank is not None:vs=[v for v in vs if v['rank']==a.rank]
     if not vs:raise ValueError('requested rank absent')
     for path in (a.headers,a.config):
         if path and not path.is_file():raise ValueError('missing metadata file: '+str(path))
     started=time.monotonic();reports=[]
+    budget=a.budget if a.budget is not None else 30.0*world
     # Same vector/features for each rank; rank itself affects loader slices.
     with tempfile.TemporaryDirectory(prefix='.boot-preflight-',dir=a.root) as td:
         work=Path(td)
         for v in vs:
-            remain=a.budget-(time.monotonic()-started)
+            remain=budget-(time.monotonic()-started)
             if remain<=0:
-                reports.append(dict(rank=v['rank'],report=dict(ok=False,error='120s total preflight budget exceeded')))
+                reports.append(dict(rank=v['rank'],report=dict(ok=False,error='%gs total preflight budget exceeded'%budget)))
                 break
             (work/'vector.json').write_text(json.dumps(v))
             container_name='boot-preflight-'+work.name.strip('.')+'-r'+str(v['rank'])
             command=['docker','run','--rm','--name',container_name,'--pull','never','--network','none','--cpus','4','--memory','8g',
                      '-v',str(a.root.resolve())+':/pkg:ro','-v',str(work)+':/work',
                      '--entrypoint','python3',a.image or v['image'],'-B','/pkg/scripts/boot_preflight.py',
-                     '--worker','--vector','/work/vector.json','--out','/work/report.json']
+                     '--worker','--vector','/work/vector.json','--out','/work/report.json','--model',a.model]
             # File mounts must precede image, never inherit DRY GPU/network/LD_PRELOAD.
             for name,path in [('headers',a.headers),('config',a.config)]:
                 if path:
@@ -540,14 +548,14 @@ def host(a):
                 if r.returncode:row['ok']=False
             except subprocess.TimeoutExpired:
                 subprocess.run(['docker','rm','-f',container_name],capture_output=True,timeout=5)
-                row=dict(ok=False,error='120s total preflight budget exceeded')
+                row=dict(ok=False,error='%gs total preflight budget exceeded'%budget)
             reports.append(dict(rank=v['rank'],image=a.image or v['image'],rendered_image=v['image'],report=row))
     result=dict(ok=all(x['report']['ok'] for x in reports),ranks=reports,seconds=round(time.monotonic()-started,3),
                 dry_sha256=hashlib.sha256(a.dry.read_bytes()).hexdigest())
     a.out.write_text(json.dumps(result,indent=2)+'\n');return 0 if result['ok'] else 1
 
 
-def advisory(root, dry, out, headers=None, image=None, enabled=True):
+def advisory(root, dry, out, headers=None, image=None, enabled=True, model='target'):
     """Best-effort cached-header diagnostic; never a boot admission decision."""
     result = dict(ok=None, status='SKIPPED', reason='disabled')
     if enabled and (not headers or not Path(headers).is_file()):
@@ -555,10 +563,10 @@ def advisory(root, dry, out, headers=None, image=None, enabled=True):
     elif enabled:
         command = [sys.executable, str(Path(root)/'scripts/boot_preflight.py'),
                    '--root', str(root), '--dry', str(dry), '--headers', str(headers),
-                   '--out', str(out), '--budget', '120']
+                   '--out', str(out), '--model', model]
         if image: command += ['--image', str(image)]
         try:
-            run = subprocess.run(command, timeout=125, check=False)
+            run = subprocess.run(command, timeout=30 * len(vectors(Path(dry).read_text())) + 5, check=False)
             result = json.loads(Path(out).read_text())
             if run.returncode or result.get('ok') is not True:
                 result.update(status='WARNING', reason='cached-header preflight failed')
@@ -578,8 +586,8 @@ def advisory(root, dry, out, headers=None, image=None, enabled=True):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--worker',action='store_true')
     p.add_argument('--vector',type=Path);p.add_argument('--dry',type=Path);p.add_argument('--headers',type=Path)
-    p.add_argument('--rank',type=int,choices=range(4));p.add_argument('--config',type=Path);p.add_argument('--image');p.add_argument('--root',type=Path,default=ROOT)
-    p.add_argument('--budget',type=float,default=120);p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--rank',type=int);p.add_argument('--config',type=Path);p.add_argument('--image');p.add_argument('--root',type=Path,default=ROOT)
+    p.add_argument('--budget',type=float,default=None);p.add_argument('--model',choices=('target','abliterated'),default='target');p.add_argument('--out',type=Path,required=True)
     a=p.parse_args()
     if a.worker and not a.vector:p.error('--worker requires --vector')
     if not a.worker and not a.dry:p.error('--dry required')

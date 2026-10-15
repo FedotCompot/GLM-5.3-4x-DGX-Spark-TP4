@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — TP8 over eight Sparks (unqualified)
+
+`RECIPE_TP_SIZE` (4 default, or 8) sets the node count and TP size in the launcher, DRY vectors and CPU boot
+preflight. `profiles/tp8.env` selects a 31,404,851,200-byte ordinary KV head (16,394 blocks: four resident
+262,144-token requests) and turns off the TP4-shaped draft head, eh_proj, Marlin L2 hints and attention front;
+the launcher refuses those, row-shard and stable top-k at TP8. K-stop, NVFP4 MTP experts and the DSA shortcut
+admit TP8; 8-head ranks run the released Triton MLA kernels through `glm_mla_heads` (TP4 dispatch unchanged).
+CPU-verified only; no TP8 boot. [Plan and projections](docs/tp8.md).
+
+`RECIPE_MODEL=abliterated` selects Blackfrost-AI/GLM-5.3-DERISKED-Int4-Int8Mix (pinned manifest, same config,
+index and template as the stock target) from separate `ABLITERATED_*` model and sidecar paths. Preflight now
+refuses any NVFP4 sidecar whose recorded source shards differ from the selected checkpoint. Unbooted.
+[Weights](docs/weights.md).
+
 ## 2026-10-13 — exact attention-front fusion
 
 On decode CUDA graphs (M1..16) the NVFP4 `fused_qkv_a` partitions (2048 + 576) reach their consumers without `cat`,

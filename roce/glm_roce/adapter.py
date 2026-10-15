@@ -53,7 +53,7 @@ ENV_REQUIRE = "GLM_ROCE_REQUIRE"
 # all-reduces and bigger mixed batches.  Prefill chunks (4096 tokens = 32 MiB) stay on NCCL.
 # The logits all-gather shard is rows x 38,720 x 2 B (bf16 head): 128 rows = 9.9 MB fit 16 MiB;
 # 256 rows (19.8 MB) or an fp32 head fall back to NCCL by the size gate, on every rank alike.
-# Pinned host memory per rank = 10 x max(all-reduce, gather) at TP4 = 160 MiB with these values.
+# Pinned host memory per rank = (2 x world + 2) x max(all-reduce, gather): 160 MiB at TP4, 288 MiB at TP8.
 DEFAULT_MAX_SIZE = "4MiB"
 DEFAULT_GATHER_MAX_SIZE = "16MiB"
 PACK_BYTES = 16

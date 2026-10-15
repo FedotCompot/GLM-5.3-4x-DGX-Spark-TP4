@@ -26,12 +26,12 @@ def flag(env, name):
     return value == '1'
 
 
-def speculative_config(k=3, env=None):
+def speculative_config(k=3, env=None, tp=4):
     env = os.environ if env is None else env
     if type(k) is not int or not 1 <= k <= 5:
         raise ValueError('K must be an integer in 1..5')
     config = dict(method='mtp', num_speculative_tokens=k,
-                  draft_tensor_parallel_size=4, kv_cache_dtype='fp8_e4m3',
+                  draft_tensor_parallel_size=tp, kv_cache_dtype='fp8_e4m3',
                   draft_sample_method='greedy', rejection_sample_method='standard',
                   attention_backend='FLASHINFER_MLA_SPARSE_SM90')
     if flag(env, 'GLM_MTP_FIX'):
