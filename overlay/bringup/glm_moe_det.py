@@ -17,7 +17,7 @@ MTP = 'glm_nvfp4_mtp'
 RUNNER = 'vllm.v1.worker.gpu.model_runner'
 PINS = {
     ALIGN: 'c3f7fc2087836f0160a32ab99ceb1d8f6e87c793679da34dd672e225cb7fa31b',
-    MTP: '825b7ecb15b771c158812d6f89e04d2c4ea90f6db80d2fe415fab8586e47c8a5',
+    MTP: '841d51641ad0cd923705a2482d1c143d12aa88e76321a2ae627e93f8f23cb69b',
 }
 PARAMETERS = ('topk_ids', 'block_size', 'num_experts', 'expert_map',
               'pad_sorted_ids', 'ignore_invalid_experts')

@@ -70,7 +70,7 @@ def capture_hit(stage, rows):
     CAPTURE_HITS[key] = CAPTURE_HITS.get(key, 0) + 1
 
 
-def supported(config, parallel=None):
+def supported(config, parallel=None, tp_sizes=(4,)):
     # This implementation is the non-pooled full target, not GLM5next kpool.
     ok = (getattr(config, 'architectures', None) == ['GlmMoeDsaForCausalLM']
           and getattr(config, 'index_topk', None) == 2048
@@ -79,7 +79,7 @@ def supported(config, parallel=None):
           and getattr(config, 'qk_rope_head_dim', None) == 64
           and getattr(config, 'index_kpool', 1) == 1)
     return ok and (parallel is None or (
-        parallel.tensor_parallel_size == 4
+        parallel.tensor_parallel_size in tp_sizes
         and parallel.decode_context_parallel_size == 1
         and parallel.prefill_context_parallel_size == 1))
 
@@ -257,9 +257,10 @@ def install_runner(mod):
                 or self.lora_config is not None):
             raise RuntimeError('GLM_INDEXER_SHORTCUT requires native MTP K2/Kstop K3, FULL_DECODE_ONLY, no LoRA')
         result = load(self, *a, **kw)
-        self._dsa_short_supported = supported(self.model_config.hf_config, self.parallel_config)
+        # Replicated indexer: TP8 changes no indexer shape.
+        self._dsa_short_supported = supported(self.model_config.hf_config, self.parallel_config, (4, 8))
         if not self._dsa_short_supported:
-            raise RuntimeError('GLM_INDEXER_SHORTCUT requires full GLM non-pooled TP4/PCP1/DCP1')
+            raise RuntimeError('GLM_INDEXER_SHORTCUT requires full GLM non-pooled TP4|TP8/PCP1/DCP1')
         sys.stderr.write('glm-dsa-short: armed (native MTP K2/Kstop K3, context <= 2048)\n')
         return result
 

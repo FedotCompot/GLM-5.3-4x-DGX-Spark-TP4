@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Async TP4 MTP stop, piggybacked on the existing exact-length planner D2H.
+"""Async TP4/TP8 MTP stop, piggybacked on the existing exact-length planner D2H.
 
 Control modes (GLM_MTP_KSTOP_CONTROL_MODE):
   local (default)  every TP rank decides from its own copy of the
@@ -814,7 +814,7 @@ def install_mtp(cls):
         if (sc.method!='mtp' or sc.num_speculative_tokens!=3 or sc.draft_sample_method!=('probabilistic' if os.environ.get('GLM_SPEC_SAMPLE','0')=='1' else 'greedy') or
             sc.rejection_sample_method!='standard' or sc.enable_adaptive_verification or
             not config.scheduler_config.async_scheduling):raise RuntimeError('native Kmax3 selected draft sampler/standard async required')
-        if (pc.tensor_parallel_size,pc.pipeline_parallel_size,pc.data_parallel_size,pc.decode_context_parallel_size,pc.prefill_context_parallel_size)!=(4,1,1,1,1):raise RuntimeError('TP4 only')
+        if pc.tensor_parallel_size not in (4,8) or (pc.pipeline_parallel_size,pc.data_parallel_size,pc.decode_context_parallel_size,pc.prefill_context_parallel_size)!=(1,1,1,1):raise RuntimeError('TP4/TP8 only')
         if (config.cache_config.block_size!=64 or config.scheduler_config.max_num_seqs>4 or config.lora_config or config.kv_transfer_config or pc.enable_eplb or getattr(pc,'enable_expert_parallel',False) or getattr(pc,'use_sequence_parallel_moe',False)):raise RuntimeError('unsupported layout')
         if str(config.compilation_config.cudagraph_mode).split('.')[-1]!='FULL_DECODE_ONLY':raise RuntimeError('FULL_DECODE_ONLY required')
         init(self,config,device)
