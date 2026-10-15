@@ -10,6 +10,16 @@ if [[ $RECIPE_TP_SIZE == 8 ]]; then
   source "$HERE/profiles/tp8.env"
   [[ ! -f "$CONFIG" ]] || source "$CONFIG"
 fi
+export RECIPE_MODEL="${RECIPE_MODEL:-stock}"
+case "$RECIPE_MODEL" in
+  stock) ;;
+  abliterated)
+    MODEL_DIR=${ABLITERATED_MODEL_DIR:?RECIPE_MODEL=abliterated needs ABLITERATED_MODEL_DIR}
+    GLM_ATTN_NVFP4_DIR=${ABLITERATED_ATTN_NVFP4_DIR:?RECIPE_MODEL=abliterated needs ABLITERATED_ATTN_NVFP4_DIR}
+    GLM_NVFP4_MORE_DIR=${ABLITERATED_NVFP4_MORE_DIR:?RECIPE_MODEL=abliterated needs ABLITERATED_NVFP4_MORE_DIR}
+    ;;
+  *) echo 'RECIPE_MODEL must be stock or abliterated' >&2; exit 1 ;;
+esac
 export RECIPE_PROFILE="${RECIPE_PROFILE:-native-mtp-k2}"
 case "$RECIPE_PROFILE" in
   native-mtp-k2) export RECIPE_SERVE_ARGS="$HERE/profiles/serve-args.json" ;;

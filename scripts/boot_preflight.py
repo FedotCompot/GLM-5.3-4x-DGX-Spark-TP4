@@ -470,12 +470,12 @@ def worker(a):
                 if not mount or sum(s['source']==mount for s in cache['sidecars'])!=1:
                     raise ValueError('cache sidecar path differs from DRY mount: '+key)
         docs,tensors=unpack(cache['model'])
-        pinned=json.loads((ROOT/'manifests/target.json').read_text())
+        pinned=json.loads((ROOT/'manifests'/(a.model+'.json')).read_text())
         files={f['f']:f for f in pinned['files']}
         for name in ('config.json','model.safetensors.index.json'):
-            if sha(docs[name])!=files[name]['sha256']:raise ValueError('checkpoint metadata differs from pinned target: '+name)
+            if sha(docs[name])!=files[name]['sha256']:raise ValueError('checkpoint metadata differs from pinned '+a.model+': '+name)
         for name,receipt in cache['model']['files'].items():
-            if name not in files or receipt['size']!=files[name]['size']:raise ValueError('checkpoint shard size differs from pinned target: '+name)
+            if name not in files or receipt['size']!=files[name]['size']:raise ValueError('checkpoint shard size differs from pinned '+a.model+': '+name)
         data.update(cache=cache,docs=docs,tensors=tensors)
         for sidecar in cache['sidecars']:unpack(sidecar)
         return dict(checkpoint_tensors=len(tensors),sidecars=len(cache['sidecars']))
@@ -534,7 +534,7 @@ def host(a):
             command=['docker','run','--rm','--name',container_name,'--pull','never','--network','none','--cpus','4','--memory','8g',
                      '-v',str(a.root.resolve())+':/pkg:ro','-v',str(work)+':/work',
                      '--entrypoint','python3',a.image or v['image'],'-B','/pkg/scripts/boot_preflight.py',
-                     '--worker','--vector','/work/vector.json','--out','/work/report.json']
+                     '--worker','--vector','/work/vector.json','--out','/work/report.json','--model',a.model]
             # File mounts must precede image, never inherit DRY GPU/network/LD_PRELOAD.
             for name,path in [('headers',a.headers),('config',a.config)]:
                 if path:
@@ -555,7 +555,7 @@ def host(a):
     a.out.write_text(json.dumps(result,indent=2)+'\n');return 0 if result['ok'] else 1
 
 
-def advisory(root, dry, out, headers=None, image=None, enabled=True):
+def advisory(root, dry, out, headers=None, image=None, enabled=True, model='target'):
     """Best-effort cached-header diagnostic; never a boot admission decision."""
     result = dict(ok=None, status='SKIPPED', reason='disabled')
     if enabled and (not headers or not Path(headers).is_file()):
@@ -563,7 +563,7 @@ def advisory(root, dry, out, headers=None, image=None, enabled=True):
     elif enabled:
         command = [sys.executable, str(Path(root)/'scripts/boot_preflight.py'),
                    '--root', str(root), '--dry', str(dry), '--headers', str(headers),
-                   '--out', str(out)]
+                   '--out', str(out), '--model', model]
         if image: command += ['--image', str(image)]
         try:
             run = subprocess.run(command, timeout=30 * len(vectors(Path(dry).read_text())) + 5, check=False)
@@ -587,7 +587,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--worker',action='store_true')
     p.add_argument('--vector',type=Path);p.add_argument('--dry',type=Path);p.add_argument('--headers',type=Path)
     p.add_argument('--rank',type=int);p.add_argument('--config',type=Path);p.add_argument('--image');p.add_argument('--root',type=Path,default=ROOT)
-    p.add_argument('--budget',type=float,default=None);p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--budget',type=float,default=None);p.add_argument('--model',choices=('target','abliterated'),default='target');p.add_argument('--out',type=Path,required=True)
     a=p.parse_args()
     if a.worker and not a.vector:p.error('--worker requires --vector')
     if not a.worker and not a.dry:p.error('--dry required')

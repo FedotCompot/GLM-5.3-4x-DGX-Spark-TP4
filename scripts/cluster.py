@@ -35,6 +35,42 @@ PROFILE_KEYS = [k for k in re.findall(r'^export (\w+)=', (ROOT / 'profiles/curre
                     'GLM_MOE_DET_ALIGN', 'GLM_INDEXER_STABLE_TOPK', 'GLM_INDEXER_ROW_SHARD',
                     'GLM_INDEXER_ROW_SHARD_INIT', 'GLM_MARLIN_L2HINT', 'GLM_ATTN_FRONT_FUSE')]
 GiB = 1 << 30
+# RECIPE_MODEL -> manifests/<kind>.json; both share the target's config, index and shapes (docs/weights.md).
+MODEL_MANIFESTS = {'stock': 'target', 'abliterated': 'abliterated'}
+
+
+def model_kind():
+    choice = ENV.get('RECIPE_MODEL', '').strip() or 'stock'
+    if choice not in MODEL_MANIFESTS:
+        raise ValueError('RECIPE_MODEL must be stock or abliterated')
+    return MODEL_MANIFESTS[choice]
+
+
+def model_manifest():
+    return json.loads((ROOT / 'manifests' / (model_kind() + '.json')).read_text())
+
+
+def sidecar_dirs():
+    """Host NVFP4 sidecar directories the containers will mount."""
+    if ENV.get('GLM_ATTN_WEIGHTS', 'int8') != 'nvfp4':
+        return []
+    dirs = [ENV['GLM_ATTN_NVFP4_DIR']]
+    if ENV.get('GLM_NVFP4_GROUPS', 'attn') != 'attn':
+        dirs.append(ENV['GLM_NVFP4_MORE_DIR'])
+    return dirs
+
+
+def sidecar_problems(sidecar, manifest):
+    """Source files a sidecar was converted from that differ from the selected checkpoint."""
+    shas = {f['f']: f['sha256'] for f in manifest['files']}
+    source = sidecar.get('source') or {}
+    shards = source.get('shards') or {}
+    problems = [] if shards else ['no recorded source shards']
+    problems += [name for name, digest in sorted(shards.items()) if shas.get(name) != digest]
+    for key, name in (('index_sha256', 'model.safetensors.index.json'), ('config_sha256', 'config.json')):
+        if source.get(key) != shas.get(name):
+            problems.append(name)
+    return problems
 HEALTH_POLL_S = 1          # loopback /health while booting
 SAMPLE_BOOT_S = 5          # rank samples (memory floors, admission window) while booting
 SAMPLE_STEADY_S = 10       # rank samples once admitted
@@ -984,13 +1020,20 @@ print(json.dumps(dict(architecture=image['Architecture'],image=image['Id'],MemAv
                       OVERLAY=ENV['OVERLAY_REMOTE'], MODEL=ENV['MODEL_DIR'], DRAFT=ENV['DRAFT_DIR'],
                       NCCL=ENV['NCCL_HOST_DIR'], EXTERNAL_DRAFT=uses_external_draft(), HEAD=rank == 0).items())
         print(HOSTS[rank], remote(rank, 'python3 -c ' + shlex.quote(setup + '\n' + code)))
-        checkpoints = [('target', ENV['MODEL_DIR'])]
+        checkpoints = [(model_manifest(), ENV['MODEL_DIR'])]
         if uses_external_draft():
-            checkpoints.append(('drafter', ENV['DRAFT_DIR']))
-        for kind, path in checkpoints:
-            manifest = json.loads((ROOT / f'manifests/{kind}.json').read_text())
+            checkpoints.append((json.loads((ROOT / 'manifests/drafter.json').read_text()), ENV['DRAFT_DIR']))
+        for manifest, path in checkpoints:
             result = remote(rank, verify_command(path, manifest, ENV.get('VERIFY_WEIGHTS', 'cached')), timeout=1200)
             print(HOSTS[rank], result, flush=True)
+        # Index and config alone match across same-shape checkpoints; shards prove provenance.
+        for path in sidecar_dirs():
+            problems = sidecar_problems(json.loads(remote(rank, 'cat ' + shlex.quote(path + '/manifest.json'))),
+                                        checkpoints[0][0])
+            if problems:
+                raise RuntimeError('NVFP4 sidecar %s was not converted from %s (%d source files differ, e.g. %s); '
+                                   'reconvert it from MODEL_DIR (docs/NVFP4-SIDECARS.md)'
+                                   % (path, checkpoints[0][0]['repo'], len(problems), problems[0]))
         sha = remote(rank, 'sha256sum ' + shlex.quote(ENV['NCCL_HOST_DIR'] + '/libnccl.so.2.30.7')).split()[0]
         if sha != nccl_hashes()[rank]:
             raise RuntimeError('NCCL binary hash mismatch on ' + HOSTS[rank])
@@ -1240,7 +1283,8 @@ def serve(ctn):
             if headers and Path(headers).is_file():
                 dry.write_text('\n'.join(shlex.join(docker_command(rank, ctn)) for rank in RANKS)+'\n')
             result = advisory(ROOT, dry, Path(tmp)/'report.json', headers,
-                       ENV.get('RECIPE_BOOT_PREFLIGHT_IMAGE'), ENV.get('RECIPE_BOOT_PREFLIGHT', '1') == '1')
+                       ENV.get('RECIPE_BOOT_PREFLIGHT_IMAGE'), ENV.get('RECIPE_BOOT_PREFLIGHT', '1') == '1',
+                       model_kind())
             logdir = ROOT/'logs'/ctn
             logdir.mkdir(parents=True, exist_ok=True)
             (logdir/'cpu-boot-preflight.json').write_text(json.dumps(result, indent=2)+'\n')
@@ -1250,7 +1294,7 @@ def serve(ctn):
     preflight(ctn)
     token = ctn + ':' + uuid.uuid4().hex
     lock(token)
-    deployment = dict(ctn=ctn, token=token, hosts=HOSTS, ips=IPS, images=IMAGES,
+    deployment = dict(ctn=ctn, token=token, hosts=HOSTS, ips=IPS, images=IMAGES, model=model_kind(),
                       runtime=ENV['OVERLAY_REMOTE'], profile=ENV.get('RECIPE_PROFILE', 'native-mtp-k2'), created=time.time())
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(deployment, indent=2) + '\n')
@@ -1326,10 +1370,16 @@ def l2hint_setup():
         print(hashlib.sha256((dest / f).read_bytes()).hexdigest(), 'overlay/l2hint-serving/' + f, flush=True)
 
 
+def model_note():
+    manifest = model_manifest()
+    return 'Model: %s (%s@%s)' % (ENV.get('RECIPE_MODEL', '').strip() or 'stock', manifest['repo'], manifest['sha'])
+
+
 def main():
     validate()
     launch_switches()
     floors = floors_note()
+    model = model_note()
     command = sys.argv[1] if len(sys.argv) > 1 else 'status'
     ctn = ENV.get('CTN', 'glm53full-' + time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     if not re.fullmatch(r'glm53full-[A-Za-z0-9_-]+', ctn):
@@ -1344,6 +1394,7 @@ def main():
         if kstop_note():
             print('# ' + kstop_note())
         print('# ' + floors)
+        print('# ' + model)
         for rank in RANKS:
             print(f'# jit-prep rank={rank} host={HOSTS[rank]}')
             print(shlex.join(jit_prep_command(rank, ctn)))
@@ -1389,6 +1440,7 @@ def main():
         if kstop_note():
             print(kstop_note(), flush=True)
         print(floors, flush=True)
+        print(model, flush=True)
         serve(ctn)
         return
     deployment = json.loads(STATE.read_text())
