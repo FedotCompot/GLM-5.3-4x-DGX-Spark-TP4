@@ -124,11 +124,56 @@ def download(root, manifest):
     verify(root, manifest)
 
 
+# Hub metadata, not serving assets; the target also drops its local template backup.
+MANIFEST_EXCLUDE = ('.gitattributes', 'chat_template.jinja.bak-prethinking')
+KINDS = ('target', 'abliterated', 'drafter')
+
+
+def hub_files(repo, sha, opener=urllib.request.urlopen):
+    url = 'https://huggingface.co/api/models/%s/revision/%s?blobs=true' % (repo, sha)
+    with opener(url, timeout=120) as src:
+        info = json.load(src)
+    if info.get('sha') != sha:
+        raise ValueError('Hub returned a different revision')
+    return info['siblings']
+
+
+def build_manifest(repo, sha, opener=urllib.request.urlopen):
+    """Complete manifest of an immutable revision: LFS SHA256 from the Hub, small files hashed here."""
+    files = []
+    for item in sorted(hub_files(repo, sha, opener), key=lambda x: x['rfilename']):
+        name = item['rfilename']
+        if name in MANIFEST_EXCLUDE:
+            continue
+        lfs = item.get('lfs') or {}
+        if lfs.get('sha256'):
+            files.append(dict(f=name, size=lfs['size'], sha256=lfs['sha256']))
+            continue
+        url = 'https://huggingface.co/%s/resolve/%s/%s' % (repo, sha, urllib.parse.quote(name, safe='/'))
+        with opener(url, timeout=120) as src:
+            body = src.read()
+        files.append(dict(f=name, size=len(body), sha256=hashlib.sha256(body).hexdigest()))
+    manifest = dict(repo=repo, sha=sha, files=files, schema=1)
+    validate_manifest(manifest)
+    return manifest
+
+
+def manifest_for(kind):
+    if kind not in KINDS:
+        raise ValueError('kind must be one of ' + ', '.join(KINDS))
+    return json.loads((Path(__file__).resolve().parents[1] / 'manifests' / (kind + '.json')).read_text())
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('download', 'verify'))
-    parser.add_argument('kind', choices=('target', 'drafter'))
-    parser.add_argument('directory', type=Path)
+    parser.add_argument('command', choices=('download', 'verify', 'manifest'))
+    parser.add_argument('kind', help='target, abliterated or drafter; for manifest: <repo>@<revision>')
+    parser.add_argument('directory', type=Path, help='checkpoint directory; for manifest: output JSON')
     opts = parser.parse_args()
-    manifest = json.loads((Path(__file__).resolve().parents[1] / 'manifests' / (opts.kind + '.json')).read_text())
-    (download if opts.command == 'download' else verify)(opts.directory, manifest)
+    if opts.command == 'manifest':
+        repo, _, rev = opts.kind.partition('@')
+        built = build_manifest(repo, rev)
+        opts.directory.write_text(json.dumps(built, indent=2) + '\n')
+        opts.directory.with_suffix('.sha256').write_text(''.join('%s  %s\n' % (f['sha256'], f['f']) for f in built['files']))
+    else:
+        (download if opts.command == 'download' else verify)(opts.directory, manifest_for(opts.kind))
