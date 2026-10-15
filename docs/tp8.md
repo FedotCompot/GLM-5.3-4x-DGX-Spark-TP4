@@ -88,8 +88,8 @@ port appears once per link. The release's two "rails" `rocep1s0f0,roceP2p1s0f0` 
 So the TP4 fleet uses one cable per node, and TP8 needs **one 200G switch port per node: an 8-port (or larger)
 200G RoCE switch**, each node's port 0 cabled to it and both twins addressed as today. The port (25 GB/s) and
 the two x4 links (~27 GB/s) are nearly matched, so cabling port 1 to a second switch would add little bandwidth.
-The fabric must stay lossless RoCE v2 (PFC/ECN as on the TP4 fabric); the eight fabric addresses go into `IPS`
-in rank order.
+The repo does not record the TP4 fabric's QoS (lossless or not); RoCE v2 with GID index 3 is what it pins. The
+eight fabric addresses go into `IPS` in rank order.
 
 A switchless ring is possible at any node count (both ports to the two neighbours; @ajclark ran four Sparks
 that way, [issue #2](https://github.com/tonyd2wild/GLM-5.3-Int4-Int8Mix-TP4-4x-DGX-Spark/issues/2)), but it
@@ -111,6 +111,66 @@ Two per-node checks now run in `./start.sh preflight` because they get likelier 
 and otherwise fails as an opaque NCCL init error, issue #2), and a node whose idle SM clock sits under 60 % of
 the fleet median is reported, because one slow rank gates the whole TP group (a post-crash GB10 stuck at
 721-890 MHz is recorded in tony's README).
+
+## MikroTik CRS804 DDQ bring-up (untested)
+
+Nothing in this section has run on hardware. The switch facts come from MikroTik's documentation; every Spark-side
+and cabling detail must be confirmed on the real fabric before trusting a TP8 number.
+
+**Fit.** The CRS804-4DDQ has four 400G QSFP56-DD ports; each splits into two 200G links
+([datasheet](https://cdn.mikrotik.com/web-assets/product_files/CRS804-4DDQ-hRM_260809.pdf)), so 8 x 200G serves
+exactly eight Sparks with one leg on each node's port 0. Its 98DX7335 chip supports PFC, ECN and lossless buffers
+([QoS manual](https://manual.mikrotik.com/docs/7.25/bridging-and-switching/quality-of-service/)). There is no spare
+200G port: management and SSH stay on the existing LAN (the switch also has two 10GbE ports).
+
+**Cabling.** Four 400G QSFP-DD to 2 x 200G QSFP56 breakout DACs, one per switch port. Some are sold for DGX Spark
+clusters; that is a vendor claim, not a test. Keep ranks in leg order so a bad cable maps to a known pair:
+
+| Switch port | Leg 1 | Leg 2 |
+|---|---|---|
+| QSFP-DD 1 | rank 0 | rank 1 |
+| QSFP-DD 2 | rank 2 | rank 3 |
+| QSFP-DD 3 | rank 4 | rank 5 |
+| QSFP-DD 4 | rank 6 | rank 7 |
+
+**Switch, phase 1 (plain).** Upgrade RouterOS to 7.23 or later (the lossless traffic-class rework). Read the breakout
+interface names from `/interface/ethernet print` after cabling; this doc does not guess them. On each Spark leg:
+200G, matching FEC on both ends, and jumbo MTU equal to the Sparks' fabric MTU. A CRS812 DDQ user reported that
+200G breakout DACs needed auto-negotiation off and the speed forced; check link state and error counters
+(`/interface/ethernet monitor`) before any NCCL traffic. All legs in one hardware-offloaded bridge; address both
+port-0 twins on each Spark the same way the TP4 fabric does today.
+
+**Switch, phase 2 (lossless, only if phase 1 shows loss).** RoCEnante writes every packet with
+`traffic_class = 0` (`roce/b12x/.../_roce_proxy.c`) and the profile sets no `NCCL_IB_TC`, so all fabric traffic is
+DSCP 0. PFC must therefore protect the class that DSCP 0 lands in, on the switch and on every Spark NIC; protecting
+any other class does nothing. Switch side, syntax from the QoS manual (`<leg>` and the rate are placeholders):
+
+```text
+/interface/ethernet/switch/qos/profile add name=roce dscp=0 traffic-class=3
+/interface/ethernet/switch/qos/priority-flow-control add name=pfc-tc3 rx=yes tx=yes traffic-class=3
+/interface/ethernet/switch/qos/port set <leg> trust-l3=keep pfc=pfc-tc3 egress-rate-queue3=200Gbps
+/interface/ethernet/switch/qos/tx-manager/queue set 3 ecn=yes use-shared-buffers=yes
+```
+
+The manual requires `egress-rate-queue3` for PFC receive and shared buffers for PFC and ECN, says WRED must be off
+on lossless classes, and notes that changing hardware resource settings briefly drops packets. On the Sparks, PFC
+must be enabled on the priority that DSCP 0 maps to (with MLNX tooling, e.g. `mlnx_qos -i <netdev> --trust dscp`
+plus `--pfc` on that priority, on both twins); confirm the tool and mapping exist on DGX OS first. Changing
+`NCCL_IB_TC` or RoCEnante's traffic class to a dedicated DSCP is cleaner but is a code and profile change that
+needs its own qualification.
+
+**What to watch.** Under load, per-port drops and pause counters on the switch, and on each Spark
+`ethtool -S <netdev>` out-of-sequence, discard and pause counters. RoCEnante fails stop on a wait timeout (about
+20 s); NCCL errors end the boot. Either one after a clean phase-1 link check points at loss, not at the recipe.
+
+**Order.**
+
+1. Four Sparks on the switch, released TP4 profile and stock checkpoint: the known-good baseline, compared with
+   the TP4 results already in this repo.
+2. `./start.sh preflight` on all eight nodes: weights, RoCE v2 GID at index 3 on every fabric device, and the idle
+   clock warning. A passing NCCL probe alone proves nothing (issue #2); never run probes while a model loads.
+3. `RECIPE_TP_SIZE=8`, eight `HOSTS`/`IPS`, `DRY=1 ./start.sh serve`, then serve; answer the hardware questions below.
+4. `RECIPE_MODEL=abliterated` last, after its sidecars are converted ([weights](weights.md)), so a fault has one cause.
 
 ## TP8 versus TP4xPP2 versus EP
 
@@ -203,7 +263,8 @@ RoCEnante at eight peers, K-stop guards across eight ranks, quality and speed. T
 2. NCCL connection count and pinned memory at TP8; is `RECIPE_NCCL_NO_LL128=1` needed?
 3. c1/c4 decode and prefill versus TP4 on the same day; how much do 8-rank collectives cost per step?
 4. Does the H8 split MLA match the stock FlashInfer sparse MLA within the TP4 tolerance on GB10?
-5. Switch choice (8+ ports at 200G) and RoCE QoS (PFC/ECN); RoCEnante timeouts or retransmits at 8 peers?
+5. CRS804 DDQ: do the breakout legs link at 200G, does the plain fabric drop under c4 load, and is PFC on
+   the DSCP-0 class needed? RoCEnante timeouts or retransmits at 8 peers?
 6. Is a padded (19,392-row) draft head bank worth building to restore the NVFP4 draft head and eh_proj?
 7. New Marlin L2-hint specialisations for 6144x512 / 256x6144 and an H8 attention-front kernel: worth it?
 8. Does TP4 + DCP4 on the existing nodes beat TP8 for long-context capacity once its prefill cost is measured here?
