@@ -14,6 +14,7 @@ fi
 python3 "$ROOT/scripts/check_source_pins.py" "$GLM_IMAGE_SRC"
 python3 -B "$ROOT/tests/test_recipe.py"
 python3 -B "$ROOT/tests/test_launcher.py"
+python3 -B "$ROOT/tests/test_topology.py"
 python3 -B "$ROOT/tests/test_boot_preflight.py"
 python3 -B "$ROOT/tests/test_release_1006.py"
 python3 -B "$ROOT/tests/test_release_1010.py"
